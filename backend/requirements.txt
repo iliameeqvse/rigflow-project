@@ -15,7 +15,7 @@ django-celery-results==2.5.1
 django-celery-beat==2.7.0
 flower==2.0.1
 dj-stripe==2.8.4
-stripe==10.8.0
+stripe>=3.0.0,<5.0.0
 channels==4.1.0
 channels-redis==4.2.0
 daphne==4.1.2
