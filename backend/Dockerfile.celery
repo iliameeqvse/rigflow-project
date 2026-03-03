@@ -1,0 +1,26 @@
+FROM python:3.12-slim-bookworm
+
+# Install system dependencies AND Blender
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    blender \
+    libgl1 \
+    libxi6 \
+    libxxf86vm1 \
+    libxrender1 \
+    libxfixes3 \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Enable Rigify addon in Blender's user preferences
+RUN blender --background --python-expr \
+    "import bpy; bpy.ops.preferences.addon_enable(module='rigify'); bpy.ops.wm.save_userpref()" \
+    || true   # don't fail build if this step has a non-zero exit
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+
+ENV BLENDER_PATH=/usr/bin/blender

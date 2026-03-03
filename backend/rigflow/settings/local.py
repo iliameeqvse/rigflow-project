@@ -3,10 +3,14 @@ from .base import *
 DEBUG = True
 
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
+  'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'postgres',
+        'USER': 'postgres',
+        'PASSWORD': 'password', # Must match your docker-compose db password
+        'HOST': 'db',
+        'PORT': '5432',
+  }
 }
 
 DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
