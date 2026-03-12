@@ -2,44 +2,38 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Sequence
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol, Sequence, TypeVar, Union
 
-TYPE_CHECKING = False
-if TYPE_CHECKING:
-    from numbers import _IntegralLike as IntegralLike
+try:
+    import numpy.typing as npt
 
+    NumpyArray = npt.NDArray[Any]
+except ImportError:
+    pass
+
+if sys.version_info >= (3, 10):
+    from typing import TypeGuard
+else:
     try:
-        import numpy.typing as npt
-
-        NumpyArray = npt.NDArray[Any]
+        from typing_extensions import TypeGuard
     except ImportError:
-        pass
 
-if sys.version_info >= (3, 13):
-    from types import CapsuleType
-else:
-    CapsuleType = object
-
-if sys.version_info >= (3, 12):
-    from collections.abc import Buffer
-else:
-    Buffer = Any
+        class TypeGuard:  # type: ignore[no-redef]
+            def __class_getitem__(cls, item: Any) -> type[bool]:
+                return bool
 
 
-_Ink = float | tuple[int, ...] | str
-
-Coords = Sequence[float] | Sequence[Sequence[float]]
+Coords = Union[Sequence[float], Sequence[Sequence[float]]]
 
 
 _T_co = TypeVar("_T_co", covariant=True)
 
 
 class SupportsRead(Protocol[_T_co]):
-    def read(self, length: int = ..., /) -> _T_co: ...
+    def read(self, __length: int = ...) -> _T_co: ...
 
 
-StrOrBytesPath = str | bytes | os.PathLike[str] | os.PathLike[bytes]
+StrOrBytesPath = Union[str, bytes, "os.PathLike[str]", "os.PathLike[bytes]"]
 
 
-__all__ = ["Buffer", "IntegralLike", "StrOrBytesPath", "SupportsRead"]
+__all__ = ["TypeGuard", "StrOrBytesPath", "SupportsRead"]

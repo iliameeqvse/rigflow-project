@@ -22,33 +22,38 @@
 
 
 class MissingFieldException(Exception):
-
-    """
-    Exception for cases when something is missing
+    """Deprecated, use MissingFieldError
     """
 
-    def __init__(self, message):
+    def __init__(self, message: str) -> None:
         """Initialize MissingFieldException
 
         Args:
             message: Message of exception
 
         """
-        super(MissingFieldException, self).__init__(
-            "Field '{}' not found.".format(message))
+        super().__init__(f"Field '{message}' not found.")
 
 
 class FormatException(Exception):
-
+    """Deprecated use FormatError
     """
-    Exception for cases when something has wrong format
-    """
-    pass
 
 
 class WrongArgumentException(Exception):
+    """Deprecated, use WrongArgumentError
+    """
 
+
+class MissingFieldError(MissingFieldException):
+    """Exception for cases when something is missing
     """
-    Exception for cases when wrong argument is passed
+
+class FormatError(FormatException):
+    """Exception for cases when something has wrong format
     """
-    pass
+
+
+class WrongArgumentError(WrongArgumentException):
+    """Exception for cases when wrong argument is passed
+    """

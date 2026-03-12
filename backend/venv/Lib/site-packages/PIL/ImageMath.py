@@ -17,14 +17,11 @@
 from __future__ import annotations
 
 import builtins
+from types import CodeType
+from typing import Any, Callable
 
 from . import Image, _imagingmath
-
-TYPE_CHECKING = False
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from types import CodeType
-    from typing import Any
+from ._deprecate import deprecate
 
 
 class _Operand:
@@ -62,12 +59,13 @@ class _Operand:
         if im2 is None:
             # unary operation
             out = Image.new(mode or im_1.mode, im_1.size, None)
+            im_1.load()
             try:
                 op = getattr(_imagingmath, f"{op}_{im_1.mode}")
             except AttributeError as e:
                 msg = f"bad operand type for '{op}'"
                 raise TypeError(msg) from e
-            _imagingmath.unop(op, out.getim(), im_1.getim())
+            _imagingmath.unop(op, out.im.id, im_1.im.id)
         else:
             # binary operation
             im_2 = self.__fixup(im2)
@@ -88,12 +86,14 @@ class _Operand:
                 if im_2.size != size:
                     im_2 = im_2.crop((0, 0) + size)
             out = Image.new(mode or im_1.mode, im_1.size, None)
+            im_1.load()
+            im_2.load()
             try:
                 op = getattr(_imagingmath, f"{op}_{im_1.mode}")
             except AttributeError as e:
                 msg = f"bad operand type for '{op}'"
                 raise TypeError(msg) from e
-            _imagingmath.binop(op, out.getim(), im_1.getim(), im_2.getim())
+            _imagingmath.binop(op, out.im.id, im_1.im.id, im_2.im.id)
         return _Operand(out)
 
     # unary operators
@@ -176,10 +176,10 @@ class _Operand:
         return self.apply("rshift", self, other)
 
     # logical
-    def __eq__(self, other: _Operand | float) -> _Operand:  # type: ignore[override]
+    def __eq__(self, other):
         return self.apply("eq", self, other)
 
-    def __ne__(self, other: _Operand | float) -> _Operand:  # type: ignore[override]
+    def __ne__(self, other):
         return self.apply("ne", self, other)
 
     def __lt__(self, other: _Operand | float) -> _Operand:
@@ -236,7 +236,11 @@ ops = {
 }
 
 
-def lambda_eval(expression: Callable[[dict[str, Any]], Any], **kw: Any) -> Any:
+def lambda_eval(
+    expression: Callable[[dict[str, Any]], Any],
+    options: dict[str, Any] = {},
+    **kw: Any,
+) -> Any:
     """
     Returns the result of an image function.
 
@@ -245,16 +249,19 @@ def lambda_eval(expression: Callable[[dict[str, Any]], Any], **kw: Any) -> Any:
     :py:func:`~PIL.Image.merge` function.
 
     :param expression: A function that receives a dictionary.
-    :param **kw: Values to add to the function's dictionary.
+    :param options: Values to add to the function's dictionary. You
+                    can either use a dictionary, or one or more keyword
+                    arguments.
     :return: The expression result. This is usually an image object, but can
              also be an integer, a floating point value, or a pixel tuple,
              depending on the expression.
     """
 
     args: dict[str, Any] = ops.copy()
+    args.update(options)
     args.update(kw)
     for k, v in args.items():
-        if isinstance(v, Image.Image):
+        if hasattr(v, "im"):
             args[k] = _Operand(v)
 
     out = expression(args)
@@ -264,7 +271,11 @@ def lambda_eval(expression: Callable[[dict[str, Any]], Any], **kw: Any) -> Any:
         return out
 
 
-def unsafe_eval(expression: str, **kw: Any) -> Any:
+def unsafe_eval(
+    expression: str,
+    options: dict[str, Any] = {},
+    **kw: Any,
+) -> Any:
     """
     Evaluates an image expression. This uses Python's ``eval()`` function to process
     the expression string, and carries the security risks of doing so. It is not
@@ -276,7 +287,9 @@ def unsafe_eval(expression: str, **kw: Any) -> Any:
     :py:func:`~PIL.Image.merge` function.
 
     :param expression: A string containing a Python-style expression.
-    :param **kw: Values to add to the evaluation context.
+    :param options: Values to add to the evaluation context.  You
+                    can either use a dictionary, or one or more keyword
+                    arguments.
     :return: The evaluated expression. This is usually an image object, but can
              also be an integer, a floating point value, or a pixel tuple,
              depending on the expression.
@@ -284,14 +297,15 @@ def unsafe_eval(expression: str, **kw: Any) -> Any:
 
     # build execution namespace
     args: dict[str, Any] = ops.copy()
-    for k in kw:
+    for k in list(options.keys()) + list(kw.keys()):
         if "__" in k or hasattr(builtins, k):
             msg = f"'{k}' not allowed"
             raise ValueError(msg)
 
+    args.update(options)
     args.update(kw)
     for k, v in args.items():
-        if isinstance(v, Image.Image):
+        if hasattr(v, "im"):
             args[k] = _Operand(v)
 
     compiled_code = compile(expression, "<string>", "eval")
@@ -312,3 +326,32 @@ def unsafe_eval(expression: str, **kw: Any) -> Any:
         return out.im
     except AttributeError:
         return out
+
+
+def eval(
+    expression: str,
+    _dict: dict[str, Any] = {},
+    **kw: Any,
+) -> Any:
+    """
+    Evaluates an image expression.
+
+    Deprecated. Use lambda_eval() or unsafe_eval() instead.
+
+    :param expression: A string containing a Python-style expression.
+    :param _dict: Values to add to the evaluation context.  You
+                  can either use a dictionary, or one or more keyword
+                  arguments.
+    :return: The evaluated expression. This is usually an image object, but can
+             also be an integer, a floating point value, or a pixel tuple,
+             depending on the expression.
+
+    ..  deprecated:: 10.3.0
+    """
+
+    deprecate(
+        "ImageMath.eval",
+        12,
+        "ImageMath.lambda_eval or ImageMath.unsafe_eval",
+    )
+    return unsafe_eval(expression, _dict, **kw)
