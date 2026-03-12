@@ -21,28 +21,30 @@
 # SOFTWARE.
 
 
-class StringBuilder(object):
 
+class StringBuilder:
+    string: list[str]
     """
     Builds string parts together acting like Java/.NET StringBuilder
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.string = []
 
-    def append(self, string):
+    def append(self, string: str) -> None:
         """Appends non empty string
 
         Args:
             string: String to append
         Returns:
             None
+
         """
         if string:
             self.string.append(string)
 
-    def __str__(self):
-        return ''.join(self.string)
+    def __str__(self) -> str:
+        return "".join(self.string)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.string)

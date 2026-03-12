@@ -1,4 +1,4 @@
-#!C:\rigflow\backend\venv\Scripts\python.exe
+#!C:\rigflow-project\backend\venv\Scripts\python.exe
 
 import sys
 import json
