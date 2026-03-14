@@ -11,6 +11,9 @@ import os
 
 from django.core.wsgi import get_wsgi_application
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'rigflow.settings')
+
+# Default to local settings for development. In docker-compose and other
+# deployment environments this is overridden via DJANGO_SETTINGS_MODULE.
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "rigflow.settings.local")
 
 application = get_wsgi_application()

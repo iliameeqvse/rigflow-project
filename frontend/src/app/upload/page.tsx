@@ -45,7 +45,15 @@ export default function UploadPage() {
       // The editor page will poll for completion and show the 3D viewer
       router.push(`/editor/${data.id}`);
     } catch (err: any) {
-      setError(err.response?.data?.error ?? "Upload failed. Please try again.");
+      const msg =
+        err.response?.data?.detail ||
+        (typeof err.response?.data?.error === "string"
+          ? err.response.data.error
+          : null) ||
+        err.response?.data?.error ||
+        err.message ||
+        "Upload failed. Please try again.";
+      setError(String(msg));
       setUploading(false);
     }
   };
