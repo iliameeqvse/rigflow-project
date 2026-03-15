@@ -3,7 +3,10 @@ import axios, { AxiosInstance } from "axios";
 // All Django API calls go through this single axios instance
 const api: AxiosInstance = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1",
-  withCredentials: true,
+  // We use Authorization headers with tokens from localStorage, so we do NOT
+  // need browser credentials/cookies on cross-origin requests. Disabling
+  // credentials avoids strict CORS rules with wildcard origins.
+  withCredentials: false,
 });
 
 // Attach JWT token to every request automatically

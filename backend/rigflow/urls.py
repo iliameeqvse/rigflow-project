@@ -22,6 +22,7 @@ from django.urls import path, include
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/", include("apps.rigging.urls")),
+    path("api/v1/auth/", include("apps.users.urls")),
 ]
 
 # Serve media files (rigged GLBs, uploads) so the 3D viewer can load them

@@ -89,9 +89,35 @@ export default function EditorPage() {
               color: "#00e676",
               marginBottom: "1rem",
               fontSize: "0.9rem",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "1rem",
+              flexWrap: "wrap",
             }}
           >
-            ✅ Rigging complete! Your model is ready.
+            <span>✅ Rigging complete! Your model is ready.</span>
+            <a
+              href={glbUrl}
+              download
+              style={{
+                padding: "0.5rem 0.9rem",
+                background:
+                  "linear-gradient(135deg, rgba(108,99,255,0.15), rgba(0,212,255,0.25))",
+                border: "1px solid rgba(108,99,255,0.7)",
+                borderRadius: 999,
+                color: "#ffffff",
+                fontSize: "0.85rem",
+                fontWeight: 600,
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.4rem",
+                whiteSpace: "nowrap",
+              }}
+            >
+              ⬇️ Download rigged FBX
+            </a>
           </div>
           <ModelViewer glbUrl={glbUrl} height={550} />
         </div>
