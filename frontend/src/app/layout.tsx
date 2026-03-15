@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -27,7 +28,66 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <header
+          style={{
+            width: "100%",
+            padding: "1rem 1.5rem",
+            borderBottom: "1px solid #1f1f2e",
+            background: "radial-gradient(circle at top left, #1b1b2f, #050510)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            boxSizing: "border-box",
+          }}
+        >
+          <Link
+            href="/"
+            style={{
+              fontSize: "1.2rem",
+              fontWeight: 800,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "#ffffff",
+              textDecoration: "none",
+            }}
+          >
+            Rigflow
+          </Link>
+          <nav
+            style={{
+              display: "flex",
+              gap: "0.75rem",
+              alignItems: "center",
+              fontSize: "0.9rem",
+            }}
+          >
+            <Link
+              href="/login"
+              style={{
+                color: "#b0b0ff",
+                textDecoration: "none",
+              }}
+            >
+              Log in
+            </Link>
+            <Link
+              href="/signup"
+              style={{
+                padding: "0.4rem 0.9rem",
+                borderRadius: 999,
+                border: "1px solid rgba(108,99,255,0.7)",
+                background:
+                  "linear-gradient(135deg, rgba(108,99,255,0.3), rgba(0,212,255,0.3))",
+                color: "#ffffff",
+                textDecoration: "none",
+                fontWeight: 600,
+              }}
+            >
+              Get started
+            </Link>
+          </nav>
+        </header>
+        <main>{children}</main>
       </body>
     </html>
   );
