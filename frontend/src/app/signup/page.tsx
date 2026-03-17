@@ -24,14 +24,21 @@ export default function SignupPage() {
       });
       router.push("/login");
     } catch (err: any) {
-      const msg =
-        err.response?.data?.detail ||
-        err.response?.data?.error ||
-        err.message ||
-        "Sign up failed. Please try again.";
-      setError(String(msg));
-    } finally {
-      setLoading(false);
+      const data = err.response?.data;
+      let msg = "Sign up failed. Please try again.";
+      if (data) {
+        if (typeof data === "object") {
+          // Pull first field-level error e.g. {email: ["already exists"]}
+          const firstKey = Object.keys(data)[0];
+          const firstVal = data[firstKey];
+          msg = Array.isArray(firstVal)
+            ? `${firstKey}: ${firstVal[0]}`
+            : data.detail || data.error || msg;
+        } else if (typeof data === "string") {
+          msg = data;
+        }
+      }
+      setError(msg);
     }
   };
 
