@@ -1,53 +1,59 @@
 import axios, { AxiosInstance } from "axios";
+import {
+  clearAuthTokens,
+  getAccessToken,
+  getRefreshToken,
+  setAuthTokens,
+} from "@/lib/auth";
 
-// All Django API calls go through this single axios instance
-const api: AxiosInstance = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1",
-  // We use Authorization headers with tokens from localStorage, so we do NOT
-  // need browser credentials/cookies on cross-origin requests. Disabling
-  // credentials avoids strict CORS rules with wildcard origins.
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+
+export const api: AxiosInstance = axios.create({
+  baseURL: API_BASE_URL,
   withCredentials: false,
 });
 
-// Attach JWT token to every request automatically
 api.interceptors.request.use((config) => {
-  const token =
-    typeof window !== "undefined" ? localStorage.getItem("access") : null;
+  const token = getAccessToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
 
-// If we get 401 (token expired), automatically try to refresh
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    if (error.response?.status === 401) {
-      const refresh =
-        typeof window !== "undefined" ? localStorage.getItem("refresh") : null;
+    const originalRequest = error.config;
+
+    if (
+      error.response?.status === 401 &&
+      originalRequest &&
+      !originalRequest._retry &&
+      !String(originalRequest.url ?? "").includes("/auth/token/refresh/")
+    ) {
+      originalRequest._retry = true;
+      const refresh = getRefreshToken();
+
       if (refresh) {
         try {
-          const { data } = await axios.post(
-            `${process.env.NEXT_PUBLIC_API_URL}/auth/token/refresh/`,
-            { refresh },
-          );
-          localStorage.setItem("access", data.access);
-          error.config.headers.Authorization = `Bearer ${data.access}`;
-          return api.request(error.config);
+          const { data } = await axios.post(`${API_BASE_URL}/auth/token/refresh/`, {
+            refresh,
+          });
+          setAuthTokens(data.access, refresh);
+          originalRequest.headers.Authorization = `Bearer ${data.access}`;
+          return api.request(originalRequest);
         } catch {
-          // Refresh failed — log user out
-          localStorage.removeItem("access");
-          localStorage.removeItem("refresh");
+          clearAuthTokens();
           window.location.href = "/login";
         }
       }
     }
+
     return Promise.reject(error);
   },
 );
-
-// ── Typed API functions ───────────────────────────────────────────────────────
 
 export interface RiggedModel {
   id: string;
@@ -82,7 +88,6 @@ export interface Animation {
   download_count: number;
 }
 
-// Upload a 3D model file → returns immediately with status "pending"
 export const uploadModel = (file: File, name: string) => {
   const form = new FormData();
   form.append("file", file);
@@ -90,35 +95,23 @@ export const uploadModel = (file: File, name: string) => {
   return api.post<RiggedModel>("/rigs/", form);
 };
 
-// Poll rig processing status
-export const getRigStatus = (id: string) =>
-  api.get<RigStatus>(`/rigs/${id}/status/`);
+export const getRigStatus = (id: string) => api.get<RigStatus>(`/rigs/${id}/status/`);
 
-// List user's rigged models
 export const listRigs = () => api.get<RiggedModel[]>("/rigs/");
 
-// Browse animation library
 export const listAnimations = (params?: {
   search?: string;
   category__slug?: string;
   is_looping?: boolean;
   page?: number;
-}) =>
-  api.get<{ results: Animation[]; count: number }>("/animations/", { params });
+}) => api.get<{ results: Animation[]; count: number }>("/animations/", { params });
 
-// Apply animation to a rigged model (triggers Celery retarget task)
 export const retargetAnimation = (animId: string, rigId: string) =>
-  api.post<{ task_id: string; status: string }>(
-    `/animations/${animId}/retarget/`,
-    { rig_id: rigId },
-  );
+  api.post<{ task_id: string; status: string }>(`/animations/${animId}/retarget/`, {
+    rig_id: rigId,
+  });
 
-// Upload a custom animation file
-export const uploadAnimation = (
-  file: File,
-  name: string,
-  categorySlug: string,
-) => {
+export const uploadAnimation = (file: File, name: string, categorySlug: string) => {
   const form = new FormData();
   form.append("file", file);
   form.append("name", name);
@@ -126,7 +119,6 @@ export const uploadAnimation = (
   return api.post<Animation>("/animations/", form);
 };
 
-// Trigger export (FBX or GLB download)
 export const exportProject = (projectId: string, format: "glb" | "fbx") =>
   api.post<{ download_url: string }>(`/projects/${projectId}/export/`, {
     format,
