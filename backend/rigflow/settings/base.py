@@ -119,11 +119,8 @@ AUTH_USER_MODEL = "users.User"
 
 
 REST_FRAMEWORK = {
-    # For now we keep things simple: the API is open and used
-    # from the Next.js frontend without CSRF tokens or auth.
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-        "rest_framework.authentication.BasicAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.AllowAny",

@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { api } from "@/lib/api";
-import { hasAuthSession } from "@/lib/auth";
+import api from "@/lib/api";
 
 interface Category {
   id: number;
@@ -12,12 +11,27 @@ interface Category {
   icon: string;
 }
 
-interface ApiErrorShape {
-  detail?: string;
-  file?: string[];
-  name?: string[];
-  error?: string;
-}
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  background: "#0d0d1a",
+  border: "1px solid #2a2a3d",
+  borderRadius: 8,
+  padding: "0.65rem 0.9rem",
+  color: "#fff",
+  fontSize: "0.95rem",
+  outline: "none",
+  boxSizing: "border-box",
+};
+
+const labelStyle: React.CSSProperties = {
+  display: "block",
+  fontSize: "0.8rem",
+  fontWeight: 600,
+  color: "#a0a0c0",
+  marginBottom: "0.4rem",
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+};
 
 export default function UploadAnimationPage() {
   const router = useRouter();
@@ -29,19 +43,19 @@ export default function UploadAnimationPage() {
   const [categorySlug, setCategorySlug] = useState("");
   const [tags, setTags] = useState("");
   const [isLooping, setIsLooping] = useState(false);
-  const [isPublic, setIsPublic] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
+  // Redirect to login if not authenticated
   useEffect(() => {
-    if (!hasAuthSession()) router.replace("/login");
+    if (!localStorage.getItem("access")) router.replace("/login");
   }, [router]);
 
+  // Load categories
   useEffect(() => {
-    api
-      .get<Category[]>("/animations/categories/")
+    api.get<Category[]>("/animations/categories/")
       .then(({ data }) => setCategories(data))
       .catch(() => {});
   }, []);
@@ -56,10 +70,16 @@ export default function UploadAnimationPage() {
       setError("File too large. Maximum size is 100 MB.");
       return;
     }
-
     setFile(selected);
     if (!name) setName(selected.name.replace(/\.[^.]+$/, ""));
     setError(null);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const dropped = e.dataTransfer.files[0];
+    if (dropped) handleFileSelect(dropped);
   };
 
   const handleSubmit = async () => {
@@ -67,92 +87,101 @@ export default function UploadAnimationPage() {
       setError("Please select a file and enter a name.");
       return;
     }
-
     setUploading(true);
     setError(null);
-
     try {
       const form = new FormData();
       form.append("file", file);
       form.append("name", name.trim());
       form.append("description", description);
-      form.append("category_slug", categorySlug);
+      form.append("category_slug", categorySlug);   // may be "" — that's fine
       form.append("tags", tags);
       form.append("is_looping", String(isLooping));
-      form.append("is_public", String(isPublic));
-
       await api.post("/animations/", form);
       router.push("/animations");
-    } catch (err: unknown) {
-      const maybeError = err as {
-        response?: { data?: ApiErrorShape };
-        message?: string;
-      };
-      const data = maybeError.response?.data;
-
-      const msg =
-        data?.detail ||
-        data?.file?.[0] ||
-        data?.name?.[0] ||
-        (typeof data?.error === "string" ? data.error : null) ||
-        maybeError.message ||
-        "Upload failed. Please try again.";
-
-      setError(String(msg));
+    } catch (err: any) {
+      const data = err.response?.data;
+      let msg = "Upload failed. Please try again.";
+      if (data) {
+        if (data.detail) {
+          msg = data.detail;
+        } else if (typeof data === "object") {
+          const firstKey = Object.keys(data)[0];
+          const val = data[firstKey];
+          msg = Array.isArray(val) ? `${firstKey}: ${val[0]}` : String(val);
+        }
+      }
+      setError(msg);
       setUploading(false);
     }
   };
 
   return (
-    <div className="mx-auto my-12 w-full max-w-2xl px-4 text-slate-100">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold">Upload animation</h1>
-        <p className="mt-2 text-slate-400">
-          Supports GLB, GLTF, FBX — up to 100 MB.
+    <div style={{ maxWidth: 620, margin: "4rem auto", padding: "0 1rem" }}>
+      {/* Header */}
+      <div style={{ marginBottom: "2rem" }}>
+        <h1 style={{ fontSize: "1.8rem", fontWeight: 800, marginBottom: "0.4rem" }}>
+          Upload animation
+        </h1>
+        <p style={{ color: "#888" }}>
+          Supports GLB, GLTF, FBX — up to 100 MB. Uploads go live immediately.
         </p>
-      </header>
+      </div>
 
+      {/* Drop zone */}
       <div
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOver(false);
-          const dropped = e.dataTransfer.files[0];
-          if (dropped) handleFileSelect(dropped);
-        }}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
+        onDrop={handleDrop}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onClick={() => fileInput.current?.click()}
-        className={`mb-6 cursor-pointer rounded-xl border-2 border-dashed p-8 text-center transition ${
-          file
-            ? "border-violet-500 bg-violet-500/10"
+        style={{
+          border: `2px dashed ${file ? "#6c63ff" : dragOver ? "#00d4ff" : "#2a2a3d"}`,
+          borderRadius: 12,
+          padding: "2.5rem",
+          textAlign: "center",
+          cursor: "pointer",
+          background: file
+            ? "rgba(108,99,255,0.05)"
             : dragOver
-              ? "border-cyan-400 bg-cyan-500/10"
-              : "border-slate-700 bg-transparent"
-        }`}
+            ? "rgba(0,212,255,0.04)"
+            : "transparent",
+          transition: "all 0.2s",
+          marginBottom: "1.5rem",
+        }}
       >
-        <div className="mb-2 text-4xl">{file ? "🎞️" : "⬆️"}</div>
+        <div style={{ fontSize: "2.5rem", marginBottom: "0.75rem" }}>
+          {file ? "🎞️" : "⬆️"}
+        </div>
         {file ? (
           <>
-            <p className="font-semibold text-violet-300">{file.name}</p>
-            <p className="mt-1 text-sm text-slate-400">
-              {(file.size / (1024 * 1024)).toFixed(1)} MB
-            </p>
+            <div style={{ fontWeight: 700, color: "#6c63ff" }}>{file.name}</div>
+            <div style={{ color: "#888", fontSize: "0.85rem", marginTop: "0.25rem" }}>
+              {(file.size / (1024 * 1024)).toFixed(1)} MB ·{" "}
+              <span
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFile(null);
+                  setName("");
+                }}
+                style={{ color: "#f87171", cursor: "pointer", textDecoration: "underline" }}
+              >
+                Remove
+              </span>
+            </div>
           </>
         ) : (
           <>
-            <p className="font-semibold">Drop your animation file here</p>
-            <p className="text-sm text-slate-400">or click to browse</p>
+            <div style={{ fontWeight: 600, marginBottom: "0.3rem" }}>
+              Drop your animation file here
+            </div>
+            <div style={{ color: "#888", fontSize: "0.85rem" }}>or click to browse</div>
           </>
         )}
-
         <input
           ref={fileInput}
           type="file"
           accept=".glb,.gltf,.fbx"
-          className="hidden"
+          style={{ display: "none" }}
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) handleFileSelect(f);
@@ -160,63 +189,84 @@ export default function UploadAnimationPage() {
         />
       </div>
 
-      <div className="space-y-4">
-        <input
-          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Animation name *"
-        />
+      {/* Fields */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
 
-        <textarea
-          className="min-h-24 w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Description"
-        />
-
-        <select
-          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3"
-          value={categorySlug}
-          onChange={(e) => setCategorySlug(e.target.value)}
-        >
-          <option value="">Category (optional)</option>
-          {categories.map((c) => (
-            <option key={c.slug} value={c.slug}>
-              {c.icon} {c.name}
-            </option>
-          ))}
-        </select>
-
-        <input
-          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-4 py-3"
-          value={tags}
-          onChange={(e) => setTags(e.target.value)}
-          placeholder="Tags (comma separated)"
-        />
-
-        <div className="flex flex-wrap gap-6 text-sm">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={isLooping}
-              onChange={(e) => setIsLooping(e.target.checked)}
-            />
-            Looping animation
-          </label>
-
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={isPublic}
-              onChange={(e) => setIsPublic(e.target.checked)}
-            />
-            Public (review required)
-          </label>
+        <div>
+          <label style={labelStyle}>Animation name *</label>
+          <input
+            style={inputStyle}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Idle Breathing Loop"
+            maxLength={255}
+          />
         </div>
 
+        <div>
+          <label style={labelStyle}>Description</label>
+          <textarea
+            style={{ ...inputStyle, resize: "vertical", minHeight: 80 }}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Optional — describe the animation style or use case"
+          />
+        </div>
+
+        <div>
+          <label style={labelStyle}>Category</label>
+          <select
+            style={{ ...inputStyle, cursor: "pointer" }}
+            value={categorySlug}
+            onChange={(e) => setCategorySlug(e.target.value)}
+          >
+            <option value="">— None —</option>
+            {categories.map((c) => (
+              <option key={c.slug} value={c.slug}>
+                {c.icon} {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label style={labelStyle}>Tags</label>
+          <input
+            style={inputStyle}
+            value={tags}
+            onChange={(e) => setTags(e.target.value)}
+            placeholder="walk, locomotion, cycle  (comma-separated)"
+          />
+        </div>
+
+        {/* Looping toggle */}
+        <label style={{ display: "flex", alignItems: "center", gap: "0.75rem", cursor: "pointer" }}>
+          <div
+            onClick={() => setIsLooping((v) => !v)}
+            style={{
+              width: 44, height: 24, borderRadius: 999,
+              background: isLooping ? "#6c63ff" : "#2a2a3d",
+              position: "relative", transition: "background 0.2s", flexShrink: 0,
+            }}
+          >
+            <div style={{
+              position: "absolute", top: 3,
+              left: isLooping ? 23 : 3,
+              width: 18, height: 18, borderRadius: "50%",
+              background: "#fff", transition: "left 0.2s",
+            }} />
+          </div>
+          <span style={{ fontSize: "0.9rem", color: "#ccc" }}>Looping animation</span>
+        </label>
+
+        {/* Error */}
         {error && (
-          <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-rose-300">
+          <div style={{
+            background: "rgba(248,113,113,0.1)",
+            border: "1px solid rgba(248,113,113,0.3)",
+            borderRadius: 8, padding: "0.75rem 1rem",
+            color: "#f87171", fontSize: "0.9rem",
+          }}>
             {error}
           </div>
         )}
@@ -224,7 +274,16 @@ export default function UploadAnimationPage() {
         <button
           onClick={handleSubmit}
           disabled={uploading || !file || !name.trim()}
-          className="w-full rounded-lg bg-gradient-to-r from-violet-500 to-cyan-400 px-4 py-3 font-semibold text-slate-950 disabled:cursor-not-allowed disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-400"
+          style={{
+            padding: "0.85rem", borderRadius: 10, border: "none",
+            background: uploading || !file || !name.trim()
+              ? "#2a2a3d"
+              : "linear-gradient(135deg, #6c63ff, #00d4ff)",
+            color: uploading || !file || !name.trim() ? "#666" : "#fff",
+            fontWeight: 700, fontSize: "1rem",
+            cursor: uploading || !file || !name.trim() ? "not-allowed" : "pointer",
+            transition: "all 0.2s",
+          }}
         >
           {uploading ? "Uploading…" : "Upload animation"}
         </button>

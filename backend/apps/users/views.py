@@ -1,11 +1,25 @@
 from django.contrib.auth import authenticate
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .serializers import LoginSerializer, RegisterSerializer
+from .serializers import RegisterSerializer, LoginSerializer
+
+
+def _token_response(user):
+    """Return access + refresh JWT pair for a user."""
+    refresh = RefreshToken.for_user(user)
+    return {
+        "access": str(refresh.access_token),
+        "refresh": str(refresh),
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "username": user.username,
+        },
+    }
 
 
 @api_view(["POST"])
@@ -14,16 +28,9 @@ def register_view(request):
     serializer = RegisterSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
     user = serializer.save()
-    return Response(
-        {
-            "id": user.id,
-            "email": user.email,
-            "username": user.username,
-        },
-        status=status.HTTP_201_CREATED,
-    )
+    # Auto-login after registration — return tokens straight away
+    return Response(_token_response(user), status=status.HTTP_201_CREATED)
 
 
 @api_view(["POST"])
@@ -42,17 +49,23 @@ def login_view(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    refresh_token = RefreshToken.for_user(user)
-    access_token = refresh_token.access_token
+    return Response(_token_response(user))
 
-    return Response(
-        {
-            "access": str(access_token),
-            "refresh": str(refresh_token),
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "username": user.username,
-            },
-        }
-    )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def me_view(request):
+    """Return the currently authenticated user's info."""
+    user = request.user
+    profile = getattr(user, "profile", None)
+    return Response({
+        "id": user.id,
+        "email": user.email,
+        "username": user.username,
+        "plan": profile.plan if profile else "free",
+        "avatar": (
+            request.build_absolute_uri(profile.avatar.url)
+            if profile and profile.avatar
+            else None
+        ),
+    })
