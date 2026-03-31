@@ -4,11 +4,6 @@ Blender headless auto-rig script.
 Run: blender --background --python blender_autorig.py -- \
      --input mesh.fbx --output rigged.glb --bones bones.json --format fbx
      [--landmarks '{"chin":[x,y,z],...}']
-
-Landmark coordinates arrive in Three.js / glTF space (Y-up, right-handed):
-  Three.js X  →  Blender X   (same)
-  Three.js Y  →  Blender Z   (up axis)
-  Three.js Z  →  Blender -Y  (depth)
 """
 
 import bpy
@@ -45,11 +40,10 @@ TARGET_HEIGHT = 1.75
 
 def threejs_to_blender(pt) -> Vector:
     """
-    Convert a [x, y, z] point from Three.js / glTF Y-up space
-    to Blender Z-up space.
-      Three.js X  →  Blender X
-      Three.js Y  →  Blender Z  (up)
-      Three.js Z  →  Blender -Y (depth)
+    Convert a [x, y, z] landmark from Three.js Y-up → Blender Z-up.
+    The model is viewed in Three.js after Blender exported it as GLB.
+    GLB → Three.js applies: Blender X→X, Blender Y→-Z, Blender Z→Y
+    So reverse: Three.js x→x, Three.js y→z, Three.js z→-y
     """
     x, y, z = pt
     return Vector((x, -z, y))
@@ -136,6 +130,7 @@ def orient_normalize_scale(meshes):
 
     def z_dom(v): a,b,c,*_=measure(v); return c>max(a,b)*1.15
 
+    # Step 1: make Z the tallest axis
     if not z_dom(verts):
         candidates=[(-90,0,0),(90,0,0),(0,0,90),(0,0,-90),(180,0,0),(-90,0,180),(-90,0,90),(-90,0,-90)]
         found=False
@@ -152,11 +147,24 @@ def orient_normalize_scale(meshes):
     else:
         print("[RigFlow] Upright OK")
 
+    # Step 2: if depth (Y) is wider than width (X), the model is facing sideways.
+    # Rigify expects the character to face -Y (so left = +X).
+    # We try BOTH -90 and +90 and pick whichever makes X wider than Y
+    # (i.e., the character is now facing front/back rather than sideways).
     verts=get_verts(meshes); sx,sy,sz,*_=measure(verts)
-    if sy > sx*1.05:
-        print(f"[RigFlow] Facing fix — Y:{sy:.3f}>X:{sx:.3f}, rotating 90° Z")
-        rot(meshes,0,0,90)
+    if sy > sx * 1.05:
+        # Try -90° first (most common: model originally faces +X in DCC tool)
+        rot(meshes, 0, 0, -90)
+        v2=get_verts(meshes); a2,b2,c2,*_=measure(v2)
+        if b2 > a2 * 1.05:
+            # -90° still has Y > X, that's wrong — try +90° instead
+            rot(meshes, 0, 0, 180)   # undo -90 and apply +90 = net +90 from original
+            v3=get_verts(meshes); a3,b3,c3,*_=measure(v3)
+            print(f"[RigFlow] Facing fix: tried -90°(bad), using +90° — X:{a3:.3f} Y:{b3:.3f}")
+        else:
+            print(f"[RigFlow] Facing fix: -90° — X:{a2:.3f} Y:{b2:.3f}")
         verts=get_verts(meshes); sx,sy,sz,*_=measure(verts)
+
     print(f"[RigFlow] After orient — X:{sx:.3f} Y:{sy:.3f} Z:{sz:.3f}")
 
     centre_feet(meshes)
@@ -191,7 +199,7 @@ def create_and_fit_metarig(props, landmarks=None):
     bpy.context.view_layer.objects.active=metarig
     bpy.ops.object.mode_set(mode="EDIT")
 
-    # Remove face rig
+    # Remove face rig to prevent spikes
     for bn in ["face","teeth.T","teeth.B","tongue"]:
         b=metarig.data.edit_bones.get(bn)
         if b:
@@ -201,7 +209,6 @@ def create_and_fit_metarig(props, landmarks=None):
             _rm(b)
 
     if landmarks:
-        # ── Convert landmarks from Three.js Y-up → Blender Z-up ──────────────
         chin  = threejs_to_blender(landmarks["chin"])
         lw    = threejs_to_blender(landmarks["left_wrist"])
         rw    = threejs_to_blender(landmarks["right_wrist"])
@@ -210,49 +217,38 @@ def create_and_fit_metarig(props, landmarks=None):
         ra    = threejs_to_blender(landmarks["right_ankle"])
 
         print(f"[RigFlow] Landmarks (Blender Z-up):")
-        print(f"  chin={chin[:]}")
-        print(f"  left_wrist={lw[:]},  right_wrist={rw[:]}")
-        print(f"  groin={groin[:]}")
-        print(f"  left_ankle={la[:]},  right_ankle={ra[:]}")
+        print(f"  chin={chin[:]}, groin={groin[:]}")
+        print(f"  lw={lw[:]}, rw={rw[:]}")
+        print(f"  la={la[:]}, ra={ra[:]}")
 
         eb = metarig.data.edit_bones
-
-        # ── Spine chain ───────────────────────────────────────────────────────
         body_height = chin.z - groin.z
-        spine_names = ["spine","spine.001","spine.002","spine.003","spine.004","spine.005"]
-        spine_ratios = [0.0, 0.18, 0.38, 0.58, 0.78, 0.92]   # 0=groin, 1=chin
 
+        # ── Spine ─────────────────────────────────────────────────────────────
+        spine_names  = ["spine","spine.001","spine.002","spine.003","spine.004","spine.005"]
+        spine_ratios = [0.0, 0.18, 0.38, 0.58, 0.78, 0.92]
         for i, (name, ratio) in enumerate(zip(spine_names, spine_ratios)):
             bone = eb.get(name)
             if not bone: continue
-            pt = groin + (chin - groin) * ratio
-            next_ratio = spine_ratios[i+1] if i+1 < len(spine_ratios) else 1.0
-            next_pt    = groin + (chin - groin) * next_ratio
+            pt      = groin + (chin - groin) * ratio
+            nr      = spine_ratios[i+1] if i+1 < len(spine_ratios) else 1.0
             bone.head = pt
-            bone.tail = next_pt
+            bone.tail = groin + (chin - groin) * nr
 
-        # Head bone (chin → head top)
-        head_bone = eb.get("spine.006")
-        if not head_bone:
-            head_bone = eb.get("spine.005")
+        head_bone = eb.get("spine.006") or eb.get("spine.005")
         if head_bone:
-            head_top = chin + Vector((0, 0, body_height * 0.15))
             head_bone.head = chin
-            head_bone.tail = head_top
+            head_bone.tail = chin + Vector((0, 0, body_height * 0.15))
 
-        # ── Arms ─────────────────────────────────────────────────────────────
+        # ── Arms ──────────────────────────────────────────────────────────────
         shoulder_z = groin.z + body_height * 0.82
         body_cx    = (props["min_x"] + props["max_x"]) / 2.0
 
-        # Blender convention (character faces -Y): LEFT = +X = Rigify .L
-        #                                          RIGHT = -X = Rigify .R
-        # UI tells users to click character's anatomical LEFT for "Left Wrist"
-        # so: lw → .L,  rw → .R  (direct mapping, no sign-based swap)
+        # Direct mapping: user "left_wrist" = character anatomical LEFT = Rigify .L
         for side, wrist in [("L", lw), ("R", rw)]:
             sh_pos      = Vector((wrist.x, wrist.y, shoulder_z))
             neck_pos    = Vector((body_cx, wrist.y, shoulder_z))
-            # Elbow bent slightly forward (+Y) to avoid collinear bones
-            # which crash Rigify's pole-angle calculation
+            # Elbow bent slightly forward (+Y) — avoids zero-length vectors in Rigify
             elbow_pos   = sh_pos + (wrist - sh_pos) * 0.55 + Vector((0, 0.06, -0.02))
             forearm_dir = (wrist - elbow_pos).normalized()
             hand_tip    = wrist + forearm_dir * 0.07
@@ -264,14 +260,10 @@ def create_and_fit_metarig(props, landmarks=None):
                 (f"hand.{side}",      wrist,     hand_tip),
             ]:
                 bone = eb.get(bname)
-                if bone:
-                    bone.head = h
-                    bone.tail = t
+                if bone: bone.head, bone.tail = h, t
 
         # ── Legs ──────────────────────────────────────────────────────────────
         hip_z = groin.z
-
-        # Direct mapping: la (user "left_ankle") → .L,  ra → .R
         for side, ankle in [("L", la), ("R", ra)]:
             hip_pos  = Vector((ankle.x, ankle.y, hip_z))
             knee_pos = Vector((
@@ -279,9 +271,8 @@ def create_and_fit_metarig(props, landmarks=None):
                 ankle.y - 0.03,
                 (hip_z + ankle.z) / 2 + 0.02,
             ))
-            toe_pos  = ankle + Vector((0, -0.09, 0))
-            toe_tip  = toe_pos + Vector((0, -0.04, 0))
-
+            toe_pos = ankle + Vector((0, -0.09, 0))
+            toe_tip = toe_pos + Vector((0, -0.04, 0))
             for bname, h, t in [
                 (f"thigh.{side}", hip_pos,  knee_pos),
                 (f"shin.{side}",  knee_pos, ankle),
@@ -289,9 +280,7 @@ def create_and_fit_metarig(props, landmarks=None):
                 (f"toe.{side}",   toe_pos,  toe_tip),
             ]:
                 bone = eb.get(bname)
-                if bone:
-                    bone.head = h
-                    bone.tail = t
+                if bone: bone.head, bone.tail = h, t
 
         print("[RigFlow] Landmark bone placement applied")
         bpy.ops.object.mode_set(mode="OBJECT")
@@ -320,12 +309,37 @@ def generate_full_rig(metarig):
     return rig
 
 
+def bind_meshes(meshes, rig, props):
+    """
+    Smart binding strategy:
+    - Few meshes (≤4) or single mesh: use ARMATURE_AUTO (proper weight painting).
+      This handles single-mesh full-body models correctly.
+    - Many separate parts (>4): use region-based binding (faster, good for
+      modular character meshes where each part is a distinct body segment).
+    """
+    if len(meshes) <= 4:
+        print(f"[RigFlow] {len(meshes)} mesh(es) — using ARMATURE_AUTO (weight paint)")
+        _auto_weight_bind(meshes, rig)
+    else:
+        print(f"[RigFlow] {len(meshes)} meshes — using region-based binding")
+        _region_bind(meshes, rig, props)
+
+
+def _auto_weight_bind(meshes, rig):
+    """Blender automatic weight painting — best quality for single/few meshes."""
+    select_meshes(meshes)
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.parent_set(type="ARMATURE_AUTO")
+    print(f"[RigFlow] Auto-weight bound {len(meshes)} mesh(es)")
+
+
 def get_obj_center(obj):
     corners=[obj.matrix_world@Vector(c) for c in obj.bound_box]
     return sum(corners, Vector())/8.0
 
 
-def region_based_binding(meshes, rig, props):
+def _region_bind(meshes, rig, props):
+    """Region-based binding for modular multi-part characters."""
     height=props["height"]
     body_mid_x=(props["min_x"]+props["max_x"])/2.0
     body_width=props["max_x"]-props["min_x"]
@@ -461,11 +475,12 @@ try:
     if not meshes: raise RuntimeError("No mesh objects found.")
     print(f"[RigFlow] Found {len(meshes)} mesh(es)")
 
-    props   = orient_normalize_scale(meshes)
-    metarig = create_and_fit_metarig(props, landmarks=landmarks)
+    rig_props = orient_normalize_scale(meshes)
+
+    metarig = create_and_fit_metarig(rig_props, landmarks=landmarks)
     rig     = generate_full_rig(metarig)
 
-    region_based_binding(meshes, rig, props)
+    bind_meshes(meshes, rig, rig_props)
     clean_rig_for_export(rig)
 
     bone_map=build_bone_mapping(rig)

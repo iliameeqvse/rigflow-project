@@ -1,251 +1,213 @@
 "use client";
 
-import React, { Suspense, useEffect, useRef, useState } from "react";
-import { Canvas, useLoader, useFrame, useThree } from "@react-three/fiber";
+import React, { Suspense, useEffect, useRef } from "react";
+import { Canvas, useLoader, useThree, useFrame } from "@react-three/fiber";
 import {
-  OrbitControls,
-  Environment,
-  Grid,
-  GizmoHelper,
-  GizmoViewport,
-  Html,
-  Center,
-  useGLTF,
+  OrbitControls, Environment, Grid, GizmoHelper, GizmoViewport, Html,
 } from "@react-three/drei";
 import { FBXLoader } from "three-stdlib";
+import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SkeletonHelper overlay — renders bone lines over the model
+// Target display height in Three.js units (camera is set up for ~2 unit models)
 // ─────────────────────────────────────────────────────────────────────────────
-function SkeletonOverlay({ root }: { root: THREE.Object3D }) {
+const TARGET_HEIGHT = 2.0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AutoFit — wraps any loaded Object3D, normalises its scale and
+// translates it so its feet sit at Y=0 and it's centred on XZ.
+// Works for any unit system (cm, mm, m, inches) and any up-axis.
+// ─────────────────────────────────────────────────────────────────────────────
+function AutoFit({
+  object,
+  onFitted,
+}: {
+  object: THREE.Object3D;
+  onFitted?: () => void;
+}) {
+  useEffect(() => {
+    object.position.set(0, 0, 0);
+    object.scale.set(1, 1, 1);
+    object.updateMatrixWorld(true);
+
+    const box  = new THREE.Box3().setFromObject(object);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+
+    const tallest = Math.max(size.x, size.y, size.z);
+    if (tallest === 0) return;
+
+    const scale = TARGET_HEIGHT / tallest;
+    object.scale.setScalar(scale);
+    object.updateMatrixWorld(true);
+
+    const box2   = new THREE.Box3().setFromObject(object);
+    const centre = new THREE.Vector3();
+    box2.getCenter(centre);
+
+    object.position.x -= centre.x;
+    object.position.z -= centre.z;
+    object.position.y -= box2.min.y;
+
+    // Final propagation — every bone's matrixWorld is now correct
+    // before SkeletonOverlay reads them in its own useEffect
+    object.updateMatrixWorld(true);
+    onFitted?.();
+  }, [object]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return <primitive object={object} />;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Skeleton overlay — finds every SkinnedMesh and adds a SkeletonHelper
+// ─────────────────────────────────────────────────────────────────────────────
+function SkeletonOverlay({ object }: { object: THREE.Object3D }) {
   const { scene } = useThree();
-  const helperRef = useRef<THREE.SkeletonHelper | null>(null);
+  const helpersRef = useRef<THREE.SkeletonHelper[]>([]);
 
   useEffect(() => {
-    const helper = new THREE.SkeletonHelper(root);
-    // Make bones bright and thick so they're easy to see
-    (helper.material as THREE.LineBasicMaterial).color.set(0x00d4ff);
-    (helper.material as THREE.LineBasicMaterial).linewidth = 2;
-    helper.visible = true;
-    scene.add(helper);
-    helperRef.current = helper;
+    helpersRef.current.forEach((h) => {
+      scene.remove(h);
+      h.geometry.dispose();
+      (h.material as THREE.LineBasicMaterial).dispose();
+    });
+    helpersRef.current = [];
+
+    // Force full world-matrix propagation so bone positions reflect
+    // any scale/position changes made by AutoFit before we read them
+    object.updateMatrixWorld(true);
+
+    const roots = new Set<THREE.Object3D>();
+    object.traverse((child) => {
+      if ((child as THREE.SkinnedMesh).isSkinnedMesh) {
+        const sm = child as THREE.SkinnedMesh;
+        if (sm.skeleton?.bones?.length) {
+          const rootBone = sm.skeleton.bones[0];
+          roots.add(rootBone.parent ?? rootBone);
+        }
+      }
+    });
+
+    const targets = roots.size > 0 ? [...roots] : [object];
+    targets.forEach((root) => {
+      const h = new THREE.SkeletonHelper(root);
+      (h.material as THREE.LineBasicMaterial).color.set(0x00ffff);
+      scene.add(h);
+      helpersRef.current.push(h);
+    });
 
     return () => {
-      scene.remove(helper);
-      helper.geometry.dispose();
-      (helper.material as THREE.LineBasicMaterial).dispose();
-      helperRef.current = null;
+      helpersRef.current.forEach((h) => {
+        scene.remove(h);
+        h.geometry.dispose();
+        (h.material as THREE.LineBasicMaterial).dispose();
+      });
+      helpersRef.current = [];
     };
-  }, [root, scene]);
+  }, [object, scene]);
 
   return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FBX model
+// FBX model loader
 // ─────────────────────────────────────────────────────────────────────────────
-function FBXModel({
-  url,
-  playAnimation,
-  showSkeleton,
-  waveClip,
-  onReady,
-}: {
+interface ModelProps {
   url: string;
-  playAnimation: boolean;
   showSkeleton: boolean;
-  waveClip: THREE.AnimationClip | null;
-  onReady?: (hasEmbedded: boolean) => void;
-}) {
-  const fbx    = useLoader(FBXLoader, url);
-  const mixer  = useRef<THREE.AnimationMixer | null>(null);
-  const action = useRef<THREE.AnimationAction | null>(null);
-
-  useEffect(() => {
-    const m = new THREE.AnimationMixer(fbx);
-    mixer.current = m;
-    const hasEmbedded = fbx.animations.length > 0;
-    onReady?.(hasEmbedded);
-
-    const clip = hasEmbedded
-      ? fbx.animations[0]
-      : waveClip
-      ? retargetClip(waveClip, fbx)
-      : null;
-
-    if (clip) action.current = m.clipAction(clip);
-
-    return () => {
-      m.stopAllAction();
-      m.uncacheRoot(fbx);
-      mixer.current = null;
-      action.current = null;
-    };
-  }, [fbx, waveClip]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!action.current) return;
-    if (playAnimation) action.current.reset().play();
-    else               action.current.stop();
-  }, [playAnimation]);
-
-  useFrame((_s, delta) => {
-    if (mixer.current && playAnimation) mixer.current.update(delta);
-  });
-
-  return (
-    <Center>
-      <primitive object={fbx} />
-      {showSkeleton && <SkeletonOverlay root={fbx} />}
-    </Center>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GLB model
-// ─────────────────────────────────────────────────────────────────────────────
-function GLBModel({
-  url,
-  playAnimation,
-  showSkeleton,
-  waveClip,
-  onReady,
-}: {
-  url: string;
   playAnimation: boolean;
-  showSkeleton: boolean;
-  waveClip: THREE.AnimationClip | null;
   onReady?: (hasEmbedded: boolean) => void;
-}) {
-  const { scene, animations } = useGLTF(url);
-  const mixer  = useRef<THREE.AnimationMixer | null>(null);
-  const action = useRef<THREE.AnimationAction | null>(null);
+}
+
+function FBXModel({ url, showSkeleton, playAnimation, onReady }: ModelProps) {
+  const fbx      = useLoader(FBXLoader, url);
+  const mixerRef = useRef<THREE.AnimationMixer | null>(null);
+  const waveRef  = useRef<THREE.AnimationMixer | null>(null);
 
   useEffect(() => {
-    const m = new THREE.AnimationMixer(scene);
-    mixer.current = m;
-    const hasEmbedded = animations.length > 0;
+    const hasEmbedded = (fbx.animations?.length ?? 0) > 0;
     onReady?.(hasEmbedded);
-
-    const clip = hasEmbedded
-      ? animations[0]
-      : waveClip
-      ? retargetClip(waveClip, scene)
-      : null;
-
-    if (clip) action.current = m.clipAction(clip);
-
-    return () => {
-      m.stopAllAction();
-      m.uncacheRoot(scene);
-      mixer.current = null;
-      action.current = null;
-    };
-  }, [scene, animations, waveClip]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!action.current) return;
-    if (playAnimation) action.current.reset().play();
-    else               action.current.stop();
-  }, [playAnimation]);
-
-  useFrame((_s, delta) => {
-    if (mixer.current && playAnimation) mixer.current.update(delta);
-  });
-
-  return (
-    <Center>
-      <primitive object={scene} />
-      {showSkeleton && <SkeletonOverlay root={scene} />}
-    </Center>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Retargeting helper (Mixamo → model skeleton)
-// ─────────────────────────────────────────────────────────────────────────────
-function normalizeName(name: string): string {
-  return name.replace(/^mixamorig:/i, "").replace(/[_.\s]/g, "").toLowerCase();
-}
-
-function buildBoneMap(target: THREE.Object3D, sourceNames: string[]) {
-  const targetBones: THREE.Bone[] = [];
-  target.traverse((child) => {
-    if (child instanceof THREE.Bone) targetBones.push(child);
-  });
-  const map: Record<string, THREE.Bone> = {};
-  for (const src of sourceNames) {
-    const norm = normalizeName(src);
-    let match = targetBones.find((b) => normalizeName(b.name) === norm);
-    if (!match) {
-      match = targetBones.find(
-        (b) => normalizeName(b.name).includes(norm) || norm.includes(normalizeName(b.name))
-      );
+    if (hasEmbedded) {
+      mixerRef.current = new THREE.AnimationMixer(fbx);
+      mixerRef.current.clipAction(fbx.animations[0]).play();
     }
-    if (match) map[src] = match;
-  }
-  return map;
-}
+  }, [fbx]); // eslint-disable-line react-hooks/exhaustive-deps
 
-function retargetClip(clip: THREE.AnimationClip, target: THREE.Object3D): THREE.AnimationClip {
-  const sourceNames = clip.tracks.map((t) => t.name.split(".")[0]);
-  const boneMap = buildBoneMap(target, sourceNames);
-  const newTracks: THREE.KeyframeTrack[] = [];
-  for (const track of clip.tracks) {
-    const [boneName, property] = track.name.split(/\.(.+)/);
-    const targetBone = boneMap[boneName];
-    if (!targetBone) continue;
-    const clone = track.clone();
-    clone.name = `${targetBone.name}.${property}`;
-    newTracks.push(clone);
-  }
-  return new THREE.AnimationClip(clip.name, clip.duration, newTracks);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Wave clip loader
-// ─────────────────────────────────────────────────────────────────────────────
-function WaveLoader({ onLoaded }: { onLoaded: (clip: THREE.AnimationClip) => void }) {
-  const waveFbx = useLoader(FBXLoader, "/animations/wave.fbx");
   useEffect(() => {
-    if (waveFbx.animations.length > 0) onLoaded(waveFbx.animations[0]);
-  }, [waveFbx]); // eslint-disable-line react-hooks/exhaustive-deps
-  return null;
-}
+    if (!playAnimation) { waveRef.current?.stopAllAction(); return; }
+    const loader = new FBXLoader();
+    loader.load("/animations/wave.fbx", (w) => {
+      if (!w.animations?.length) return;
+      const m = new THREE.AnimationMixer(fbx);
+      waveRef.current = m;
+      m.clipAction(w.animations[0]).play();
+    });
+    return () => { waveRef.current?.stopAllAction(); };
+  }, [playAnimation, fbx]);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Route by extension
-// ─────────────────────────────────────────────────────────────────────────────
-function RiggedModel({
-  url, playAnimation, showSkeleton, waveClip, onReady,
-}: {
-  url: string;
-  playAnimation: boolean;
-  showSkeleton: boolean;
-  waveClip: THREE.AnimationClip | null;
-  onReady?: (hasEmbedded: boolean) => void;
-}) {
-  const ext = url.split("?")[0].split(".").pop()?.toLowerCase();
-  if (ext === "fbx" || ext === "obj") {
-    return <FBXModel url={url} playAnimation={playAnimation} showSkeleton={showSkeleton} waveClip={waveClip} onReady={onReady} />;
-  }
-  return <GLBModel url={url} playAnimation={playAnimation} showSkeleton={showSkeleton} waveClip={waveClip} onReady={onReady} />;
-}
+  useFrame((_, dt) => {
+    mixerRef.current?.update(dt);
+    waveRef.current?.update(dt);
+  });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Fallbacks
-// ─────────────────────────────────────────────────────────────────────────────
-function LoadingFallback() {
+  const [fitted, setFitted] = React.useState(false);
+
   return (
-    <Html center>
-      <div style={{ color: "#6c63ff", fontSize: "14px", textAlign: "center" }}>
-        ⚙️ Loading model...
-      </div>
-    </Html>
+    <>
+      <AutoFit object={fbx} onFitted={() => setFitted(true)} />
+      {showSkeleton && fitted && <SkeletonOverlay object={fbx} />}
+    </>
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GLB model loader
+// ─────────────────────────────────────────────────────────────────────────────
+function GLBModel({ url, showSkeleton, playAnimation, onReady }: ModelProps) {
+  const { scene: gltfScene, animations } = useGLTF(url);
+  const mixerRef = useRef<THREE.AnimationMixer | null>(null);
+  const waveRef  = useRef<THREE.AnimationMixer | null>(null);
+
+  useEffect(() => {
+    const hasEmbedded = (animations?.length ?? 0) > 0;
+    onReady?.(hasEmbedded);
+    if (hasEmbedded) {
+      mixerRef.current = new THREE.AnimationMixer(gltfScene);
+      mixerRef.current.clipAction(animations[0]).play();
+    }
+  }, [gltfScene]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!playAnimation) { waveRef.current?.stopAllAction(); return; }
+    const loader = new FBXLoader();
+    loader.load("/animations/wave.fbx", (w) => {
+      if (!w.animations?.length) return;
+      const m = new THREE.AnimationMixer(gltfScene);
+      waveRef.current = m;
+      m.clipAction(w.animations[0]).play();
+    });
+    return () => { waveRef.current?.stopAllAction(); };
+  }, [playAnimation, gltfScene]);
+
+  useFrame((_, dt) => {
+    mixerRef.current?.update(dt);
+    waveRef.current?.update(dt);
+  });
+
+  const [fitted, setFitted] = React.useState(false);
+
+  return (
+    <>
+      <AutoFit object={gltfScene} onFitted={() => setFitted(true)} />
+      {showSkeleton && fitted && <SkeletonOverlay object={gltfScene} />}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Error boundary
+// ─────────────────────────────────────────────────────────────────────────────
 class ModelErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean }
@@ -255,7 +217,7 @@ class ModelErrorBoundary extends React.Component<
     this.state = { hasError: false };
   }
   static getDerivedStateFromError() { return { hasError: true }; }
-  componentDidCatch(err: unknown) { console.error("ModelViewer:", err); }
+  componentDidCatch(e: unknown) { console.error("ModelViewer error:", e); }
   render() {
     if (this.state.hasError) {
       return (
@@ -265,7 +227,7 @@ class ModelErrorBoundary extends React.Component<
           background: "#0a0a14", color: "#ff6b6b",
           fontSize: "0.9rem", textAlign: "center", padding: "1.5rem",
         }}>
-          Couldn&apos;t render a preview — but your rig was saved successfully.
+          Could not render a preview — your rig was still saved successfully.
         </div>
       );
     }
@@ -274,7 +236,7 @@ class ModelErrorBoundary extends React.Component<
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Public API
+// Public component
 // ─────────────────────────────────────────────────────────────────────────────
 interface ModelViewerProps {
   glbUrl: string;
@@ -291,34 +253,35 @@ export function ModelViewer({
   showSkeleton = false,
   onReady,
 }: ModelViewerProps) {
-  const [waveClip, setWaveClip] = useState<THREE.AnimationClip | null>(null);
+  const ext       = glbUrl.split("?")[0].split(".").pop()?.toLowerCase();
+  const isFbxOrObj = ext === "fbx" || ext === "obj";
 
   return (
     <div style={{
       width: "100%", height: `${height}px`,
-      background: "linear-gradient(135deg, #0a0a14, #0d0d20)",
+      background: "linear-gradient(135deg,#0a0a14,#0d0d20)",
       borderRadius: "12px", overflow: "hidden",
       border: "1px solid #2a2a3d",
     }}>
       <ModelErrorBoundary>
-        <Canvas camera={{ position: [0, 1.5, 4], fov: 45 }} shadows>
+        <Canvas
+          camera={{ position: [0, 1.4, 3.5], fov: 45 }}
+          shadows
+        >
           <ambientLight intensity={0.5} />
-          <directionalLight
-            position={[5, 10, 5]} intensity={1} castShadow
-            shadow-mapSize-width={2048} shadow-mapSize-height={2048}
-          />
+          <directionalLight position={[5, 10, 5]} intensity={1} castShadow />
           <pointLight position={[-5, 5, -5]} intensity={0.3} color="#6c63ff" />
           <Environment preset="studio" />
 
-          <Suspense fallback={<LoadingFallback />}>
-            <WaveLoader onLoaded={setWaveClip} />
-            <RiggedModel
-              url={glbUrl}
-              playAnimation={playAnimation}
-              showSkeleton={showSkeleton}
-              waveClip={waveClip}
-              onReady={onReady}
-            />
+          <Suspense fallback={
+            <Html center>
+              <div style={{ color: "#6c63ff", fontSize: 14 }}>⚙️ Loading model…</div>
+            </Html>
+          }>
+            {isFbxOrObj
+              ? <FBXModel url={glbUrl} showSkeleton={showSkeleton} playAnimation={playAnimation} onReady={onReady} />
+              : <GLBModel url={glbUrl} showSkeleton={showSkeleton} playAnimation={playAnimation} onReady={onReady} />
+            }
           </Suspense>
 
           <Grid
@@ -326,9 +289,13 @@ export function ModelViewer({
             cellColor="#1a1a2e" sectionColor="#2a2a3d"
             fadeDistance={15} infiniteGrid
           />
-          <OrbitControls makeDefault minDistance={1} maxDistance={20} target={[0, 1, 0]} />
+          <OrbitControls
+            makeDefault
+            minDistance={0.5} maxDistance={20}
+            target={[0, 1.0, 0]}
+          />
           <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
-            <GizmoViewport axisColors={["#ff4444", "#44ff44", "#4444ff"]} labelColor="white" />
+            <GizmoViewport axisColors={["#ff4444","#44ff44","#4444ff"]} labelColor="white" />
           </GizmoHelper>
         </Canvas>
       </ModelErrorBoundary>
