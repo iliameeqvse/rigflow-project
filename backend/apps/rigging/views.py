@@ -1,4 +1,5 @@
 import json
+import time as time_module
 from django.contrib.auth import get_user_model
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
@@ -23,6 +24,20 @@ def _get_or_create_demo_profile():
         from apps.users.models import UserProfile
         UserProfile.objects.create(user=user, plan=UserProfile.PLAN_FREE)
     return user.profile
+
+
+def _glb_url(request, rig) -> str | None:
+    """
+    Build the rigged GLB URL with a cache-busting timestamp so the browser
+    always fetches the latest file after a re-rig, even if the filename is
+    the same on disk.
+    """
+    if not rig.rigged_glb:
+        return None
+    base = request.build_absolute_uri(rig.rigged_glb.url)
+    # Use updated_at epoch so the param only changes when the file actually changes
+    ts = int(rig.updated_at.timestamp()) if rig.updated_at else int(time_module.time())
+    return f"{base}?v={ts}"
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -60,7 +75,6 @@ class RiggedModelViewSet(ModelViewSet):
             file_size_mb=round(file.size / (1024 * 1024), 2),
             status=RiggedModel.STATUS_PENDING,
         )
-        # Run synchronously in local dev (CELERY_TASK_ALWAYS_EAGER=True)
         _run_rig_pipeline(str(rig.id))
         rig.refresh_from_db()
         return Response(self.get_serializer(rig).data, status=status.HTTP_201_CREATED)
@@ -74,7 +88,7 @@ class RiggedModelViewSet(ModelViewSet):
 
         progress = {"step": "Processing...", "pct": 50}
         if rig.status == RiggedModel.STATUS_PENDING:
-            progress = {"step": "Waiting in queue...", "pct": 0}
+            progress = {"step": "Waiting in queue...", "pct": 5}
         elif rig.status == RiggedModel.STATUS_PROCESSING:
             progress = {"step": "Auto-rigging with Blender...", "pct": 50}
         elif rig.status == RiggedModel.STATUS_DONE:
@@ -82,13 +96,11 @@ class RiggedModelViewSet(ModelViewSet):
         elif rig.status == RiggedModel.STATUS_FAILED:
             progress = {"step": "Failed", "pct": 0}
 
-        rigged_glb_url = None
-        if rig.rigged_glb:
-            rigged_glb_url = request.build_absolute_uri(rig.rigged_glb.url)
-
         return Response(RigStatusSerializer({
-            "rig_id": rig.id, "status": rig.status,
-            "progress": progress, "rigged_glb_url": rigged_glb_url,
+            "rig_id":        rig.id,
+            "status":        rig.status,
+            "progress":      progress,
+            "rigged_glb_url": _glb_url(request, rig),
         }).data)
 
     @action(detail=True, methods=["post"], url_path="rerig")
@@ -115,12 +127,6 @@ class RiggedModelViewSet(ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="rerig-landmarks")
     def rerig_landmarks(self, request, id=None):
-        """
-        Save landmarks onto the rig and reset status to pending.
-        Returns 202 immediately — the frontend polls /status/ for completion.
-        The actual Blender work happens in a background thread so the HTTP
-        request returns instantly and the spinner is replaced by the progress bar.
-        """
         try:
             rig = RiggedModel.objects.get(id=id)
         except RiggedModel.DoesNotExist:
@@ -138,12 +144,10 @@ class RiggedModelViewSet(ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Clear previous rigged output
         if rig.rigged_glb:
             try: rig.rigged_glb.delete(save=False)
             except Exception: pass
 
-        # Store landmarks in bone_corrections so the background task can read them
         rig.bone_corrections = {"landmarks": landmarks}
         rig.status = RiggedModel.STATUS_PENDING
         rig.error_message = ""
@@ -152,14 +156,12 @@ class RiggedModelViewSet(ModelViewSet):
         rig.processing_time_s = None
         rig.save()
 
-        # Run in a background thread so HTTP response returns immediately
         import threading
-        t = threading.Thread(
+        threading.Thread(
             target=_run_rig_pipeline,
             args=(str(rig.id),),
             kwargs={"extra_args": ["--landmarks", json.dumps(landmarks)]},
             daemon=True,
-        )
-        t.start()
+        ).start()
 
         return Response({"status": "pending", "rig_id": str(rig.id)}, status=status.HTTP_202_ACCEPTED)

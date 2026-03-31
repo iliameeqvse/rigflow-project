@@ -8,6 +8,30 @@ import {
 import { FBXLoader } from "three-stdlib";
 import * as THREE from "three";
 
+// ── Target display height matching ModelViewer ────────────────────────────────
+const TARGET_HEIGHT = 2.0;
+
+function autoFitObject(object: THREE.Object3D) {
+  object.position.set(0, 0, 0);
+  object.scale.set(1, 1, 1);
+  object.updateMatrixWorld(true);
+  const box  = new THREE.Box3().setFromObject(object);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const tallest = Math.max(size.x, size.y, size.z);
+  if (tallest === 0) return;
+  const scale = TARGET_HEIGHT / tallest;
+  object.scale.setScalar(scale);
+  object.updateMatrixWorld(true);
+  const box2   = new THREE.Box3().setFromObject(object);
+  const centre = new THREE.Vector3();
+  box2.getCenter(centre);
+  object.position.x -= centre.x;
+  object.position.z -= centre.z;
+  object.position.y -= box2.min.y;
+  object.updateMatrixWorld(true);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 export interface LandmarkPositions {
   chin:        [number, number, number];
@@ -107,7 +131,9 @@ function ClickableModel({
   onBoundsReady: (bbox: THREE.Box3) => void;
 }) {
   useEffect(() => {
-    // Compute bbox from the raw object before any centering
+    // Normalise scale/position so landmarks match what the user sees
+    autoFitObject(object);
+    // Compute bbox AFTER fitting
     const bbox = new THREE.Box3().setFromObject(object);
     onBoundsReady(bbox);
 
