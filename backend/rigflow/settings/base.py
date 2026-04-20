@@ -135,6 +135,17 @@ REST_FRAMEWORK = {
 
         # 🔹 3. Custom throttle rate
         "post_burst":   "1/10seconds", # Custom: მაქს 1 POST 10 წამში
+
+        # ── Upload throttles ──────────────────────────────────────────────
+        "anon_upload":      "0/minute",  # anonymous → ყოველთვის 429
+        "user_upload":      "10/hour",   # default upload rate
+        "rig_upload":       "3/hour",    # POST /rigs/ + rerig (Blender მძიმეა)
+        "animation_upload": "10/hour",   # POST /animations/
+
+        # ── Read throttles ────────────────────────────────────────────────
+        "rig_list":         "30/minute", # GET /rigs/
+        "animation_list":   "60/minute", # GET /animations/
+        "strict_ip":        "30/minute", # Custom StrictIPThrottle
     },
 }
 
