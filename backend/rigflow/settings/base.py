@@ -139,8 +139,8 @@ REST_FRAMEWORK = {
         # ── Upload throttles ──────────────────────────────────────────────
         "anon_upload":      "0/minute",  # anonymous → ყოველთვის 429
         "user_upload":      "10/hour",   # default upload rate
-        "rig_upload":       "3/hour",    # POST /rigs/ + rerig (Blender მძიმეა)
-        "animation_upload": "10/hour",   # POST /animations/
+        "rig_upload":       "10/hour",    # POST /rigs/ + rerig (Blender მძიმეა)
+        "animation_upload": "15/hour",   # POST /animations/
 
         # ── Read throttles ────────────────────────────────────────────────
         "rig_list":         "30/minute", # GET /rigs/
