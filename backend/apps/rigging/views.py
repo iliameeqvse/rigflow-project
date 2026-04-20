@@ -82,14 +82,14 @@ class RiggedModelViewSet(ModelViewSet):
         description=(
             "Upload FBX / GLB / OBJ / GLTF. Blender runs synchronously and "
             "returns the rigged GLB.\n\n"
-            "**Throttle:** authenticated users only, max **3 uploads / hour**.\n"
+            "**Throttle:** authenticated users only, max **10 uploads / hour**.\n"
             "Anonymous users receive 429 immediately."
         ),
         responses={
             201: RiggedModelSerializer,
             400: OpenApiResponse(description="Missing file or unsupported format"),
             401: OpenApiResponse(description="Authentication required"),
-            429: OpenApiResponse(description="Upload limit reached (3/hour)"),
+            429: OpenApiResponse(description="Upload limit reached (10/hour)"),
         },
         tags=["Rigging"],
     )
@@ -149,7 +149,7 @@ class RiggedModelViewSet(ModelViewSet):
 
     @extend_schema(
         summary="Re-rig a model (auto-detect)",
-        description="Triggers Blender again on the original file.\n\n**Throttle:** 3/hour.",
+        description="Triggers Blender again on the original file.\n\n**Throttle:** 10/hour.",
         responses={200: RiggedModelSerializer, 429: OpenApiResponse(description="Rate limit")},
         tags=["Rigging"],
     )
@@ -179,7 +179,7 @@ class RiggedModelViewSet(ModelViewSet):
         description=(
             "Accepts 6 landmark world positions from the 3D editor and "
             "rebuilds the rig with precise bone placement.\n\n"
-            "**Throttle:** 3/hour (same as upload — runs Blender).\n\n"
+            "**Throttle:** 10/hour (same as upload — runs Blender).\n\n"
             "Returns 202 immediately; poll `/status/` for progress."
         ),
         responses={

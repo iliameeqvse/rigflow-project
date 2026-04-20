@@ -52,7 +52,7 @@ class UserUploadThrottle(SimpleRateThrottle):
 
 
 class RigUploadThrottle(UserUploadThrottle):
-    """3 rig uploads per hour — Blender is CPU-heavy."""
+    """8 rig uploads per hour — Blender is CPU-heavy."""
     scope = "rig_upload"
 
 
@@ -98,7 +98,7 @@ from rest_framework.throttling import SimpleRateThrottle, UserRateThrottle, Anon
 # ── Upload throttles (heavy operations) ───────────────────────────────────────
 
 class AnonUploadThrottle(SimpleRateThrottle):
-  
+
     scope = "anon_upload"
 
     def get_cache_key(self, request, view):
@@ -136,7 +136,7 @@ class UserUploadThrottle(SimpleRateThrottle):
 
 
 class RigUploadThrottle(UserUploadThrottle):
-    """3 rig uploads per hour — Blender is CPU-heavy."""
+    """8 rig uploads per hour — Blender is CPU-heavy."""
     scope = "rig_upload"
 
 
