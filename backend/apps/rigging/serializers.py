@@ -15,6 +15,7 @@ class RiggedModelSerializer(serializers.ModelSerializer):
             "rigged_glb_url",
             "bone_mapping",
             "file_size_mb",
+            "error_message",
             "created_at",
         ]
         read_only_fields = fields
@@ -33,3 +34,4 @@ class RigStatusSerializer(serializers.Serializer):
     status = serializers.CharField()
     progress = serializers.DictField(required=False)
     rigged_glb_url = serializers.URLField(allow_null=True)
+    error_message = serializers.CharField(allow_blank=True, required=False)

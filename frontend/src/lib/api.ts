@@ -115,6 +115,7 @@ export interface RigStatus {
   status: string;
   progress: { step: string; pct: number };
   rigged_glb_url: string | null;
+  error_message?: string;
 }
 
 export interface Animation {
@@ -150,9 +151,7 @@ export const listAnimations = (params?: {
   search?: string;
   category__slug?: string;
   is_looping?: boolean;
-  page?: number;
-}) =>
-  api.get<{ results: Animation[]; count: number }>("/animations/", { params });
+}) => api.get<Animation[]>("/animations/", { params });
 
 export const retargetAnimation = (animId: string, rigId: string) =>
   api.post<{ task_id: string; status: string }>(

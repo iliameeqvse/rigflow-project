@@ -78,24 +78,38 @@ function SkeletonOverlay({ object }: { object: THREE.Object3D }) {
     // any scale/position changes made by AutoFit before we read them
     object.updateMatrixWorld(true);
 
-    const roots = new Set<THREE.Object3D>();
+       
+    // Build helpers from both SkinnedMesh and bone roots.
+    // Different exporters wire skeletons differently, so we support both paths.
+    const seen = new Set<string>();
+
+    function pushHelper(target: THREE.Object3D, key: string) {
+      if (seen.has(key)) return;
+      seen.add(key);
+      const helper = new THREE.SkeletonHelper(target);
+      (helper.material as THREE.LineBasicMaterial).color.set(0x00ffff);
+      scene.add(helper);
+      helpersRef.current.push(helper);
+    }
+
     object.traverse((child) => {
-      if ((child as THREE.SkinnedMesh).isSkinnedMesh) {
-        const sm = child as THREE.SkinnedMesh;
-        if (sm.skeleton?.bones?.length) {
-          const rootBone = sm.skeleton.bones[0];
-          roots.add(rootBone.parent ?? rootBone);
-        }
-      }
+      const sm = child as THREE.SkinnedMesh;
+      if (!(sm.isSkinnedMesh && sm.skeleton?.bones?.length)) return;
+
+      // Path A: helper from SkinnedMesh bind context.
+      pushHelper(sm, `skinned:${sm.skeleton.uuid}`);
+
+      // Path B fallback: helper from skeleton root bone chain.
+      const rootBone = sm.skeleton.bones.find((b) => !b.parent || !(b.parent as THREE.Object3D).isBone)
+        ?? sm.skeleton.bones[0];
+      pushHelper(rootBone, `bone:${rootBone.uuid}`);
     });
 
-    const targets = roots.size > 0 ? [...roots] : [object];
-    targets.forEach((root) => {
-      const h = new THREE.SkeletonHelper(root);
-      (h.material as THREE.LineBasicMaterial).color.set(0x00ffff);
-      scene.add(h);
-      helpersRef.current.push(h);
-    });
+    if (helpersRef.current.length === 0) {
+      // Last fallback for unusual files: try the whole object container.
+      pushHelper(object, `object:${object.uuid}`);
+    }
+
 
     return () => {
       helpersRef.current.forEach((h) => {

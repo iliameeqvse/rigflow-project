@@ -145,6 +145,7 @@ class RiggedModelViewSet(ModelViewSet):
             "status":         rig.status,
             "progress":       progress,
             "rigged_glb_url": _glb_url(request, rig),
+            "error_message":  rig.error_message or "",
         }).data)
 
     @extend_schema(
@@ -160,10 +161,9 @@ class RiggedModelViewSet(ModelViewSet):
         except RiggedModel.DoesNotExist:
             return Response({"error": "Rig not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if rig.rigged_glb:
-            try: rig.rigged_glb.delete(save=False)
-            except Exception: pass
-
+        # Don't delete the old rigged_glb up front — the pipeline saves the
+        # new file with a suffixed name (Django storage auto-renames on
+        # collision), so if the re-rig fails the old rig keeps serving.
         rig.status = RiggedModel.STATUS_PENDING
         rig.error_message = rig.rig_log = ""
         rig.bone_mapping = {}
@@ -208,10 +208,9 @@ class RiggedModelViewSet(ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if rig.rigged_glb:
-            try: rig.rigged_glb.delete(save=False)
-            except Exception: pass
-
+        # Preserve the old rigged_glb — pipeline will save the new file with
+        # a unique name, and if the new run fails, the viewer keeps the old
+        # rig instead of getting a 404 on a dangling URL.
         rig.bone_corrections = {"landmarks": landmarks}
         rig.status = RiggedModel.STATUS_PENDING
         rig.error_message = rig.rig_log = ""

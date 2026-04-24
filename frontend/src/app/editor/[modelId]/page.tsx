@@ -1,13 +1,14 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRigStatus } from "@/hooks/useRigStatus";
 import { ModelViewer } from "@/components/ModelViewer";
 import { LandmarkEditor, LandmarkPositions } from "@/components/LandmarkEditor";
+import { AnimationPlayer } from "@/components/AnimationPlayer";
 import api from "@/lib/api";
 
-type Tab = "view" | "edit-rig";
+type Tab = "view" | "edit-rig" | "play";
 
 function Btn({
   onClick, active, disabled, color = "#888", children,
@@ -47,6 +48,16 @@ export default function EditorPage() {
   const [landmarkSubmitting, setLandmarkSubmitting] = useState(false);
   const [landmarkError, setLandmarkError]           = useState<string | null>(null);
   const [landmarkQueued, setLandmarkQueued]         = useState(false);
+  const [boneMapping, setBoneMapping]               = useState<Record<string, string> | null>(null);
+
+  // Fetch the rig's Mixamo→DEF bone map once rigging completes. The status
+  // endpoint doesn't include it; detail endpoint does.
+  useEffect(() => {
+    if (status !== "done" || !modelId) return;
+    api.get<{ bone_mapping: Record<string, string> }>(`/rigs/${modelId}/`)
+      .then(({ data }) => setBoneMapping(data.bone_mapping ?? {}))
+      .catch(() => setBoneMapping({}));
+  }, [status, modelId]);
 
   const modelReady = hasEmbedded !== null;
   const playLabel  = hasEmbedded ? "▶ Embedded animation" : "👋 Wave animation";
@@ -176,6 +187,12 @@ export default function EditorPage() {
             >
               🎯 Edit rig placement
             </Btn>
+            <Btn
+              onClick={() => { setTab("play"); setPlayAnimation(false); setShowSkeleton(false); setLandmarkQueued(false); }}
+              active={tab === "play"} color="#00d4ff"
+            >
+              🎞 Play animation
+            </Btn>
           </div>
 
           {/* View tab */}
@@ -250,6 +267,36 @@ export default function EditorPage() {
                 onSubmit={handleLandmarkSubmit}
                 submitting={landmarkSubmitting}
               />
+            </>
+          )}
+
+          {/* Play animation tab */}
+          {tab === "play" && (
+            <>
+              <div style={{
+                background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.3)",
+                borderRadius: 8, padding: "0.75rem 1rem",
+                color: "#00d4ff", fontSize: "0.85rem", marginBottom: "1rem",
+              }}>
+                🎞 <strong>Animation player</strong> — pick an uploaded animation
+                or drop a local FBX/GLB to play it on your rig. Bone tracks are
+                remapped onto this rig using its bone map.
+                {" "}
+                <a href="/upload-animation" style={{ color: "#fff", textDecoration: "underline" }}>
+                  Upload a new animation
+                </a>
+              </div>
+
+              {boneMapping === null ? (
+                <div style={{ color: "#888", fontSize: "0.9rem" }}>
+                  Loading rig bone map…
+                </div>
+              ) : (
+                <AnimationPlayer
+                  rigGlbUrl={glbUrl}
+                  boneMapping={boneMapping}
+                />
+              )}
             </>
           )}
         </div>

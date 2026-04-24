@@ -19,6 +19,7 @@ urlpatterns = [
 
     # ── App APIs ───────────────────────────────────────────────────────────
     path("api/v1/",      include("apps.rigging.urls")),
+    path("api/v1/",      include("apps.animations.urls")),
     path("api/v1/auth/", include("apps.users.urls")),
     path("api/v1/",      include("apps.posts.urls")),    # posts
 

@@ -1,3 +1,4 @@
+from django.utils.text import slugify
 from rest_framework import serializers
 from .models import Animation, AnimationCategory
 
@@ -63,3 +64,38 @@ class AnimationUploadSerializer(serializers.Serializer):
         if not value:
             return []
         return [t.strip().lower() for t in value.split(",") if t.strip()]
+
+    def create(self, validated_data):
+        name = validated_data["name"].strip()[:255]
+
+        category = None
+        cat_slug = validated_data.get("category_slug", "")
+        if cat_slug:
+            category = AnimationCategory.objects.filter(slug=cat_slug).first()
+
+        # Build a unique slug — slugify + uniqueness suffix.
+        base = slugify(name)[:270] or "anim"
+        slug = base
+        n = 0
+        while Animation.objects.filter(slug=slug).exists():
+            n += 1
+            slug = f"{base}-{n}"
+
+        request = self.context.get("request")
+        uploader = None
+        if request and request.user.is_authenticated:
+            uploader = getattr(request.user, "profile", None)
+
+        return Animation.objects.create(
+            name=name,
+            slug=slug,
+            description=validated_data.get("description", ""),
+            category=category,
+            gltf_file=validated_data["file"],
+            is_looping=validated_data.get("is_looping", False),
+            tags=validated_data.get("tags", []),
+            uploaded_by=uploader,
+            is_public=True,
+            is_user_uploaded=True,
+            moderation_status=Animation.MOD_APPROVED,
+        )
