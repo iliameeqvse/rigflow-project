@@ -72,18 +72,40 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                         cmd.extend(extra_args)
 
                     logger.info("Running Blender: %s", " ".join(cmd))
+                    # Force UTF-8 + replace on undecodable bytes. Blender
+                    # emits UTF-8, but on Windows subprocess defaults to
+                    # cp1252 and the reader thread crashes on any non-ASCII
+                    # byte (e.g. Rigify's "×" in log lines). That crash
+                    # silently truncates captured output and the pipeline
+                    # falls into its passthrough branch with no new GLB.
                     result = subprocess.run(
                         cmd, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace",
                         timeout=600, cwd=str(settings.BLENDER_SCRIPTS_DIR.parent),
                     )
                     rig.rig_log = (result.stdout or "")[-8000:]
 
                     if result.returncode == 0 and glb_output.exists():
                         blender_ran_ok = True
+                    elif result.returncode == 2:
+                        # Humanoid-gate rejection — surface to the user and
+                        # skip the passthrough that would otherwise save the
+                        # original mesh as a "successful" rig.
+                        reason = "Uploaded model is not humanoid."
+                        for line in (result.stdout or "").splitlines():
+                            marker = "[RigFlow] NOT_HUMANOID:"
+                            if marker in line:
+                                reason = line.split(marker, 1)[1].strip()
+                                break
+                        raise RuntimeError(reason)
                     else:
                         logger.warning("Blender exit %s", result.returncode)
                         rig.rig_log += f"\nSTDERR: {(result.stderr or '')[-2000:]}"
 
+                except RuntimeError:
+                    # Humanoid rejection — bubble up to the outer handler,
+                    # which sets status=failed with the human-readable reason.
+                    raise
                 except Exception as e:
                     logger.warning("Blender failed (%s) — passthrough.", e)
 

@@ -10,7 +10,7 @@ export default function AnimationLibraryPage() {
 
   useEffect(() => {
     listAnimations()
-      .then(({ data }) => setAnimations(data.results))
+      .then(({ data }) => setAnimations(data))
       .catch(() => setError("Unable to load animations right now."))
       .finally(() => setLoading(false));
   }, []);

@@ -1,4 +1,4 @@
-from django.shortcuts import get_object_or_404
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -14,43 +14,54 @@ from apps.throttles import (
 )
 
 
-class AnimationListView(APIView):
+class AnimationListOrUploadView(APIView):
     """
-    GET  /api/v1/animations/  — public animation library.
-    Throttle: AnimationListThrottle (anon 10/min, user 60/min).
+    GET  /api/v1/animations/  — browse animations (public library + my uploads).
+    POST /api/v1/animations/  — upload a new animation (authenticated only).
+
+    Split permission/throttle policy by method so the front-end can keep a
+    single URL for both operations (the existing form POSTs here).
     """
-    permission_classes = [AllowAny]
-    throttle_classes   = [AnimationListThrottle]
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated()]
+        return [AllowAny()]
+
+    def get_throttles(self):
+        if self.request.method == "POST":
+            return [AnonUploadThrottle(), AnimationUploadThrottle()]
+        return [AnimationListThrottle()]
 
     @extend_schema(
         summary="Browse animation library",
-        description="Returns all approved public animations.\n\n**Throttle:** 10 req/min (anon), 60 req/min (user).",
+        description=(
+            "Returns approved public animations plus any uploaded by the "
+            "authenticated user (so the uploader always sees their own work)."
+        ),
         responses={200: AnimationSerializer(many=True)},
         tags=["Animations"],
     )
     def get(self, request):
-        qs = Animation.objects.filter(
-            moderation_status=Animation.MOD_APPROVED,
-            is_public=True,
-        ).select_related("category", "uploaded_by__user")
-        serializer = AnimationSerializer(qs, many=True, context={"request": request})
-        return Response(serializer.data)
-
-
-class AnimationUploadView(APIView):
-    """
-    POST /api/v1/animations/  — upload a custom animation.
-    Throttle: authenticated only, max 10 uploads/hour.
-    Anonymous → 429 immediately.
-    """
-    permission_classes = [IsAuthenticated]
-    throttle_classes   = [AnonUploadThrottle, AnimationUploadThrottle]
+        public = Q(moderation_status=Animation.MOD_APPROVED, is_public=True)
+        if request.user.is_authenticated and hasattr(request.user, "profile"):
+            flt = public | Q(uploaded_by=request.user.profile)
+        else:
+            flt = public
+        qs = (
+            Animation.objects.filter(flt)
+            .select_related("category", "uploaded_by__user")
+            .distinct()
+        )
+        return Response(
+            AnimationSerializer(qs, many=True, context={"request": request}).data
+        )
 
     @extend_schema(
         summary="Upload a custom animation",
         description=(
-            "Upload a GLB/FBX animation file.\n\n"
-            "**Throttle:** authenticated users only, max **10 uploads / hour**.\n"
+            "Upload a GLB/GLTF/FBX animation file.\n\n"
+            "**Throttle:** authenticated users only, max 15 uploads / hour.\n"
             "Anonymous users receive 429 immediately."
         ),
         request=AnimationUploadSerializer,
@@ -58,14 +69,13 @@ class AnimationUploadView(APIView):
             201: AnimationSerializer,
             400: OpenApiResponse(description="Validation error"),
             401: OpenApiResponse(description="Authentication required"),
-            429: OpenApiResponse(description="Upload limit reached (10/hour)"),
+            429: OpenApiResponse(description="Upload limit reached"),
         },
         tags=["Animations"],
     )
     def post(self, request):
         serializer = AnimationUploadSerializer(
-            data=request.data,
-            context={"request": request},
+            data=request.data, context={"request": request}
         )
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -79,13 +89,12 @@ class AnimationUploadView(APIView):
 class AnimationCategoryListView(APIView):
     """GET /api/v1/animations/categories/ — list all categories."""
     permission_classes = [AllowAny]
-    throttle_classes   = [AnimationListThrottle]
+    throttle_classes = [AnimationListThrottle]
 
-    @extend_schema(
-        summary="List animation categories",
-        tags=["Animations"],
-    )
+    @extend_schema(summary="List animation categories", tags=["Animations"])
     def get(self, request):
         cats = AnimationCategory.objects.all()
-        data = [{"id": c.id, "name": c.name, "slug": c.slug, "icon": c.icon} for c in cats]
-        return Response(data)
+        return Response(
+            [{"id": c.id, "name": c.name, "slug": c.slug, "icon": c.icon}
+             for c in cats]
+        )

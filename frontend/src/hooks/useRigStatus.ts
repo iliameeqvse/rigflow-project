@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react"
-import { getRigStatus, RigStatus } from "@/lib/api"
+import { useState, useEffect } from "react"
+import { getRigStatus } from "@/lib/api"
 
 type StatusState = {
   status: "pending" | "processing" | "done" | "failed"
@@ -8,6 +8,11 @@ type StatusState = {
   glbUrl: string | null
   error: string | null
 }
+
+const TERMINAL_STATUSES: ReadonlySet<StatusState["status"]> = new Set(["done", "failed"])
+const POLL_INTERVAL_MS = 3000
+const WS_TIMEOUT_MS = 3000
+const MAX_CONSECUTIVE_POLL_FAILURES = 5
 
 export function useRigStatus(rigId: string | null) {
   const [state, setState] = useState<StatusState>({
@@ -22,69 +27,97 @@ export function useRigStatus(rigId: string | null) {
     if (!rigId) return
 
     let ws: WebSocket | null = null
-    let pollInterval: NodeJS.Timeout | null = null
-    let wsConnected = false
+    let pollInterval: ReturnType<typeof setInterval> | null = null
+    let pollStarted = false
+    let consecutiveFailures = 0
+    let cancelled = false
 
-    // ── Try WebSocket first (real-time updates) ───────────────────────────
+    const stopPolling = () => {
+      if (pollInterval) {
+        clearInterval(pollInterval)
+        pollInterval = null
+      }
+    }
+
+    const poll = async () => {
+      try {
+        const { data } = await getRigStatus(rigId)
+        if (cancelled) return
+        consecutiveFailures = 0
+        const status = data.status as StatusState["status"]
+        setState({
+          status,
+          pct: data.progress?.pct ?? 50,
+          step: data.progress?.step ?? "Processing...",
+          glbUrl: data.rigged_glb_url,
+          error: data.error_message?.trim() || null,
+        })
+        if (TERMINAL_STATUSES.has(status)) {
+          stopPolling()
+          ws?.close()
+        }
+      } catch {
+        if (cancelled) return
+        consecutiveFailures += 1
+        if (consecutiveFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+          stopPolling()
+          setState((prev) => ({
+            ...prev,
+            status: "failed",
+            error: "Lost contact with the server. Check that the backend is running.",
+          }))
+        }
+      }
+    }
+
+    const startPolling = () => {
+      if (pollStarted || cancelled) return
+      pollStarted = true
+      poll()
+      pollInterval = setInterval(poll, POLL_INTERVAL_MS)
+    }
+
     const wsUrl = `${process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000"}/ws/rig/${rigId}/`
-
-    ws = new WebSocket(wsUrl)
-
-    ws.onopen = () => {
-      wsConnected = true
-      console.log("WebSocket connected for rig:", rigId)
-    }
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      setState((prev) => ({
-        ...prev,
-        status: data.status ?? prev.status,
-        pct: data.pct ?? prev.pct,
-        step: data.step ?? prev.step,
-        glbUrl: data.rigged_glb_url ?? prev.glbUrl,
-        error: data.error ?? null,
-      }))
-    }
-
-    ws.onerror = () => {
-      // WebSocket failed (maybe Daphne not running) — fall back to polling
-      console.warn("WebSocket failed, falling back to HTTP polling")
+    try {
+      ws = new WebSocket(wsUrl)
+    } catch {
       startPolling()
     }
 
-    // ── HTTP polling fallback ─────────────────────────────────────────────
-    const startPolling = () => {
-      pollInterval = setInterval(async () => {
+    if (ws) {
+      ws.onmessage = (event) => {
         try {
-          const { data } = await getRigStatus(rigId)
-          setState({
-            status: data.status as StatusState["status"],
-            pct: data.progress?.pct ?? 50,
-            step: data.progress?.step ?? "Processing...",
-            glbUrl: data.rigged_glb_url,
-            error: null,
-          })
-          // Stop polling once we reach a terminal state
-          if (data.status === "done" || data.status === "failed") {
-            if (pollInterval) clearInterval(pollInterval)
+          const data = JSON.parse(event.data)
+          setState((prev) => ({
+            ...prev,
+            status: data.status ?? prev.status,
+            pct: data.pct ?? prev.pct,
+            step: data.step ?? prev.step,
+            glbUrl: data.rigged_glb_url ?? prev.glbUrl,
+            error: data.error ?? prev.error,
+          }))
+          if (data.status && TERMINAL_STATUSES.has(data.status)) {
+            stopPolling()
+            ws?.close()
           }
-        } catch (err) {
-          console.error("Polling error:", err)
+        } catch {
+          // Malformed WS frame — ignore, we'll catch up via polling.
         }
-      }, 3000) // poll every 3 seconds
+      }
+      ws.onerror = () => startPolling()
+      ws.onclose = () => startPolling()
     }
 
-    // If WebSocket doesn't connect in 3s, start polling anyway
-    const wsTimeout = setTimeout(() => {
-      if (!wsConnected) startPolling()
-    }, 3000)
+    // Fallback: if the WS isn't open within WS_TIMEOUT_MS, poll anyway.
+    const wsBackstop = setTimeout(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) startPolling()
+    }, WS_TIMEOUT_MS)
 
-    // Cleanup when component unmounts or rigId changes
     return () => {
+      cancelled = true
       ws?.close()
-      if (pollInterval) clearInterval(pollInterval)
-      clearTimeout(wsTimeout)
+      stopPolling()
+      clearTimeout(wsBackstop)
     }
   }, [rigId])
 

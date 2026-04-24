@@ -2,12 +2,14 @@
 RigFlow Blender headless auto-rig script.
 
 Pipeline:
-1) Import model (FBX / GLB / OBJ)
-2) Normalize mesh into consistent world space (Z-up, centered, feet on floor, fixed height)
-3) Create Rigify metarig and fit it to mesh bounds (or landmarks if provided)
-4) Generate full rig
-5) Parent mesh to rig with automatic weights (ARMATURE_AUTO)
-6) Export GLB + write Mixamo->Rigify bone map JSON
+  1. Import mesh (FBX / GLB / OBJ), bake any import-time transforms
+  2. Orient: longest axis → Z (up), widest horizontal axis → X (T-pose arms)
+  3. Create Rigify human metarig at its default size — this is the scale target
+  4. Scale mesh to match metarig height; align feet + XY centre with metarig
+  5. (Optional) Move metarig bones to user-supplied landmarks
+  6. Generate the final rig from the metarig — its scale is never touched
+  7. Parent mesh to rig with ARMATURE_AUTO (automatic weights)
+  8. Strip non-DEF bones, export GLB, write Rigify → Mixamo bone map
 """
 
 import argparse
@@ -19,223 +21,246 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 
-TARGET_HEIGHT = 1.75
-THREE_TARGET_HEIGHT = 2.0
+
+# The frontend's ModelViewer rescales every preview to this many units tall,
+# and the landmark picker captures clicks in that space. We reuse the ratio
+# when converting landmark positions back into Blender world coords.
+THREE_DISPLAY_HEIGHT = 2.0
+
+
+class NotHumanoidError(RuntimeError):
+    """Raised when the input mesh fails the humanoid-shape validation.
+    Mapped to subprocess exit code 2 so the Django pipeline can distinguish
+    a user-facing rejection from a generic Blender failure."""
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap
+# Utilities
 # ---------------------------------------------------------------------------
+
+def log(msg):
+    print(f"[RigFlow] {msg}")
+
 
 def enable_rigify():
-    print("[RigFlow] Enabling Rigify...")
     try:
         bpy.ops.preferences.addon_enable(module="rigify")
     except Exception:
         import addon_utils
         addon_utils.enable("rigify", default_set=True, persistent=True)
-    print("[RigFlow] Rigify enabled")
 
 
 def parse_args():
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
+    p = argparse.ArgumentParser()
+    p.add_argument("--input",     required=True)
+    p.add_argument("--output",    required=True)
+    p.add_argument("--bones",     required=True)
+    p.add_argument("--format",    default="fbx")
+    p.add_argument("--landmarks", default=None)
+    return p.parse_args(argv)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--bones", required=True)
-    parser.add_argument("--format", default="fbx")
-    parser.add_argument("--landmarks", default=None)
-    return parser.parse_args(argv)
+
+def deselect_all():
+    try:
+        if bpy.context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+    except RuntimeError:
+        pass
+    bpy.ops.object.select_all(action="DESELECT")
+
+
+def activate(obj, *, solo=True):
+    """Make `obj` the only selected + active object. Blender ops act on the
+    selection, so every transform_apply/rotate/scale happens against a known,
+    minimal target — this is what the old script got wrong."""
+    if solo:
+        deselect_all()
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+
+def apply_transforms(objs, *, location=False, rotation=False, scale=False):
+    if not objs:
+        return
+    deselect_all()
+    for o in objs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = objs[0]
+    bpy.ops.object.transform_apply(
+        location=location, rotation=rotation, scale=scale)
 
 
 # ---------------------------------------------------------------------------
-# Scene / IO
+# Scene reset + import
 # ---------------------------------------------------------------------------
 
 def clear_scene():
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    if bpy.context.active_object and bpy.context.active_object.mode != "OBJECT":
-        bpy.ops.object.mode_set(mode="OBJECT")
-    bpy.ops.object.select_all(action="SELECT")
-    bpy.ops.object.delete(use_global=True)
     enable_rigify()
 
 
-def import_model(filepath, fmt):
+def import_model(path, fmt):
     fmt = fmt.lower()
-    print(f"[RigFlow] Importing {fmt}: {filepath}")
+    log(f"Importing {fmt}: {path}")
     if fmt == "fbx":
-        bpy.ops.import_scene.fbx(filepath=filepath)
+        bpy.ops.import_scene.fbx(filepath=path)
     elif fmt in ("glb", "gltf"):
-        bpy.ops.import_scene.gltf(filepath=filepath)
+        bpy.ops.import_scene.gltf(filepath=path)
     elif fmt == "obj":
-        bpy.ops.wm.obj_import(filepath=filepath)
+        bpy.ops.wm.obj_import(filepath=path)
     else:
         raise ValueError(f"Unsupported format: {fmt}")
 
 
 def get_meshes():
-    return [o for o in bpy.data.objects if o.type == "MESH" and not o.name.startswith("WGT-")]
+    return [o for o in bpy.data.objects
+            if o.type == "MESH" and not o.name.startswith("WGT-")]
 
 
-def select_meshes(meshes):
-    bpy.ops.object.select_all(action="DESELECT")
-    for m in meshes:
-        m.select_set(True)
-    bpy.context.view_layer.objects.active = meshes[0]
+def strip_non_meshes():
+    """Drop any armatures, empties, cameras, lights the importer added. We
+    only keep raw geometry — the source rig (if any) is replaced with Rigify."""
+    keep = {id(m) for m in get_meshes()}
+    for obj in list(bpy.data.objects):
+        if id(obj) not in keep:
+            bpy.data.objects.remove(obj, do_unlink=True)
 
 
 # ---------------------------------------------------------------------------
-# Geometry helpers
+# Geometry measurement
 # ---------------------------------------------------------------------------
 
-def all_world_verts(meshes):
+def world_vertices(meshes):
     verts = []
     for obj in meshes:
         for v in obj.data.vertices:
             verts.append(obj.matrix_world @ v.co)
     if not verts:
-        raise RuntimeError("No vertices found in imported mesh")
+        raise RuntimeError("No vertices in imported mesh")
     return verts
 
 
-def bbox_from_verts(verts):
-    xs = [v.x for v in verts]
-    ys = [v.y for v in verts]
-    zs = [v.z for v in verts]
+def aabb(points):
+    xs = [p.x for p in points]
+    ys = [p.y for p in points]
+    zs = [p.z for p in points]
     return {
-        "min_x": min(xs), "max_x": max(xs),
-        "min_y": min(ys), "max_y": max(ys),
-        "min_z": min(zs), "max_z": max(zs),
-        "size_x": max(xs) - min(xs),
-        "size_y": max(ys) - min(ys),
-        "size_z": max(zs) - min(zs),
+        "min":  Vector((min(xs), min(ys), min(zs))),
+        "max":  Vector((max(xs), max(ys), max(zs))),
+        "size": Vector((max(xs) - min(xs),
+                        max(ys) - min(ys),
+                        max(zs) - min(zs))),
     }
 
 
-def apply_mesh_transforms(meshes, location=False, rotation=False, scale=False):
-    select_meshes(meshes)
-    bpy.ops.object.transform_apply(location=location, rotation=rotation, scale=scale)
-
-
-def rotate_meshes(meshes, axis, degrees):
-    select_meshes(meshes)
-    bpy.ops.transform.rotate(value=math.radians(degrees), orient_axis=axis, orient_type="GLOBAL")
-    apply_mesh_transforms(meshes, rotation=True)
-
-
-def scale_meshes(meshes, factor):
-    select_meshes(meshes)
-    bpy.ops.transform.resize(value=(factor, factor, factor))
-    apply_mesh_transforms(meshes, scale=True)
-
-
-def center_and_floor(meshes):
-    b = bbox_from_verts(all_world_verts(meshes))
-    cx = (b["min_x"] + b["max_x"]) / 2.0
-    cy = (b["min_y"] + b["max_y"]) / 2.0
-    floor = b["min_z"]
-    for m in meshes:
-        m.location.x -= cx
-        m.location.y -= cy
-        m.location.z -= floor
-    apply_mesh_transforms(meshes, location=True)
-
-
-def armature_height_world(armature_obj, prefer_deform=False, preferred_names=None):
-    bones = list(armature_obj.data.bones)
-
-    if preferred_names:
-        named = [b for b in bones if b.name in preferred_names]
-        if named:
-            bones = named
-    elif prefer_deform:
-        deform = [b for b in bones if b.name.startswith("DEF-")]
-        if deform:
-            bones = deform
-
-    points = []
-    for bone in bones:
-        points.append(armature_obj.matrix_world @ bone.head_local)
-        points.append(armature_obj.matrix_world @ bone.tail_local)
-
-    if not points:
-        return 0.0
-
-    min_z = min(p.z for p in points)
-    max_z = max(p.z for p in points)
-    return max_z - min_z
+def armature_aabb(arm):
+    pts = []
+    for b in arm.data.bones:
+        pts.append(arm.matrix_world @ b.head_local)
+        pts.append(arm.matrix_world @ b.tail_local)
+    return aabb(pts)
 
 
 # ---------------------------------------------------------------------------
-# Normalization
+# Orientation: "spin it to the right axis"
 # ---------------------------------------------------------------------------
 
-def normalize_mesh(meshes):
-    print("[RigFlow] Normalizing mesh...")
-    apply_mesh_transforms(meshes, location=True, rotation=True, scale=True)
+def orient_z_up(meshes):
+    """Make the tallest axis Z and the widest horizontal axis X.
+    Handles Y-up FBX, Z-up FBX, glTF, OBJ without special-casing per format."""
+    # Bake any import-time object transforms so world AABB is trustworthy.
+    apply_transforms(meshes, location=True, rotation=True, scale=True)
 
-    b = bbox_from_verts(all_world_verts(meshes))
-    sx, sy, sz = b["size_x"], b["size_y"], b["size_z"]
-    print(f"[RigFlow] Raw dims X:{sx:.3f} Y:{sy:.3f} Z:{sz:.3f}")
+    b = aabb(world_vertices(meshes))
+    sx, sy, sz = b["size"].x, b["size"].y, b["size"].z
 
-    # 1) Make model upright (Z tallest)
-    if sz < max(sx, sy):
-        if sx >= sy and sx >= sz:
-            rotate_meshes(meshes, "Y", 90)
-            print("[RigFlow] Rotated X->Z")
-        elif sy >= sx and sy >= sz:
-            rotate_meshes(meshes, "X", -90)
-            print("[RigFlow] Rotated Y->Z")
+    # Step 1: longest axis becomes Z
+    if sz < sx or sz < sy:
+        deselect_all()
+        for m in meshes:
+            m.select_set(True)
+        bpy.context.view_layer.objects.active = meshes[0]
 
-    # 2) Prefer T-pose width along X instead of Y (front/back on Y)
-    b = bbox_from_verts(all_world_verts(meshes))
-    if b["size_y"] > b["size_x"] * 1.15:
-        rotate_meshes(meshes, "Z", -90)
-        print("[RigFlow] Rotated around Z for forward alignment")
+        if sy >= sx:
+            # Y tallest → rotate +90° about X: +Y → +Z
+            bpy.ops.transform.rotate(
+                value=math.radians(90),
+                orient_axis="X", orient_type="GLOBAL")
+            log("Rotated Y → Z (+90° X)")
+        else:
+            # X tallest → rotate -90° about Y: +X → +Z
+            bpy.ops.transform.rotate(
+                value=math.radians(-90),
+                orient_axis="Y", orient_type="GLOBAL")
+            log("Rotated X → Z (-90° Y)")
+        apply_transforms(meshes, rotation=True)
 
-    # 3) Center on ground + scale to target height
-    center_and_floor(meshes)
-    b = bbox_from_verts(all_world_verts(meshes))
-    h = b["size_z"]
-    if h > 1e-6 and abs(h - TARGET_HEIGHT) > 0.01:
-        factor = TARGET_HEIGHT / h
-        scale_meshes(meshes, factor)
-        center_and_floor(meshes)
-        print(f"[RigFlow] Height normalized x{factor:.4f} ({h:.3f}->{TARGET_HEIGHT:.3f})")
-
-    b = bbox_from_verts(all_world_verts(meshes))
-    print(f"[RigFlow] Normalized dims X:{b['size_x']:.3f} Y:{b['size_y']:.3f} Z:{b['size_z']:.3f}")
-
-    return {
-        "height": b["size_z"],
-        "width": b["size_x"],
-        "depth": b["size_y"],
-        "min_x": b["min_x"], "max_x": b["max_x"],
-        "min_y": b["min_y"], "max_y": b["max_y"],
-        "min_z": b["min_z"], "max_z": b["max_z"],
-        "cx": (b["min_x"] + b["max_x"]) / 2.0,
-        "cy": (b["min_y"] + b["max_y"]) / 2.0,
-    }
+    # Step 2: widest horizontal axis becomes X (T-pose arms extend along X).
+    # Threshold of 1.1 avoids spurious rotation for near-square silhouettes.
+    b = aabb(world_vertices(meshes))
+    if b["size"].y > b["size"].x * 1.1:
+        deselect_all()
+        for m in meshes:
+            m.select_set(True)
+        bpy.context.view_layer.objects.active = meshes[0]
+        bpy.ops.transform.rotate(
+            value=math.radians(-90),
+            orient_axis="Z", orient_type="GLOBAL")
+        log("Rotated Y → X (-90° Z) for T-pose alignment")
+        apply_transforms(meshes, rotation=True)
 
 
 # ---------------------------------------------------------------------------
-# Landmarks
+# Humanoid-shape gate
 # ---------------------------------------------------------------------------
 
-def threejs_to_blender(pt):
-    scale = TARGET_HEIGHT / THREE_TARGET_HEIGHT
-    x, y, z = pt
-    return Vector((x * scale, -z * scale, y * scale))
+def validate_humanoid(meshes):
+    """Reject clearly non-humanoid meshes before spending time on rigging.
+
+    Called after orient_z_up so Z is already the tallest axis and X is the
+    wider horizontal (arms / shoulders) while Y is the thinner one (body
+    depth). We look at two AABB ratios:
+
+      - longest / shortest ≥ 3    — a human is much taller than they are deep
+      - middle  / shortest ≥ 1.3  — shoulder/arm span is meaningfully wider
+                                    than body depth
+
+    Together these accept T-pose, A-pose, and standing characters while
+    rejecting cars, boxes, spheres, buildings, tall-thin trunks, etc.
+    Raises NotHumanoidError with a user-facing message on rejection."""
+    b = aabb(world_vertices(meshes))
+    dims = sorted((b["size"].x, b["size"].y, b["size"].z), reverse=True)
+    longest, middle, shortest = dims
+
+    if shortest <= 1e-6:
+        raise NotHumanoidError("Uploaded mesh is flat — cannot detect body.")
+
+    if longest / shortest < 3.0:
+        raise NotHumanoidError(
+            f"Uploaded model is not humanoid: it's too bulky "
+            f"(tallest {longest:.2f} vs thinnest {shortest:.2f}, "
+            f"ratio {longest / shortest:.2f}:1 — expected at least 3:1)."
+        )
+
+    if middle / shortest < 1.3:
+        raise NotHumanoidError(
+            f"Uploaded model is not humanoid: body is too symmetric "
+            f"(width {middle:.2f} vs depth {shortest:.2f}, "
+            f"ratio {middle / shortest:.2f}:1 — expected at least 1.3:1)."
+        )
+
+    log(f"Humanoid OK: {longest:.2f} × {middle:.2f} × {shortest:.2f}")
 
 
 # ---------------------------------------------------------------------------
-# Rigify
+# Metarig
 # ---------------------------------------------------------------------------
 
 def create_metarig():
+    # Blender 4.x uses armature_human_metarig_add; older builds use
+    # metarig_sample_add. Try both; the first that works wins.
     for op in (
         lambda: bpy.ops.object.armature_human_metarig_add(),
         lambda: bpy.ops.armature.metarig_sample_add(metarig_type="human"),
@@ -244,102 +269,131 @@ def create_metarig():
             op()
             break
         except Exception:
-            pass
-    metarig = bpy.context.active_object
-    if not metarig or metarig.type != "ARMATURE":
+            continue
+    mr = bpy.context.active_object
+    if not mr or mr.type != "ARMATURE":
         raise RuntimeError("Failed to create Rigify metarig")
-    return metarig
+    mr.name = "metarig"
+    mr.location = (0.0, 0.0, 0.0)
+    return mr
 
 
-def remove_face_rig(metarig):
-    bpy.context.view_layer.objects.active = metarig
+def remove_face_bones(metarig):
+    activate(metarig)
     bpy.ops.object.mode_set(mode="EDIT")
 
-    def remove_recursive(b):
-        for c in list(b.children):
-            remove_recursive(c)
-        metarig.data.edit_bones.remove(b)
+    def kill(bone):
+        for c in list(bone.children):
+            kill(c)
+        metarig.data.edit_bones.remove(bone)
 
-    for name in ["face", "teeth.T", "teeth.B", "tongue"]:
-        bone = metarig.data.edit_bones.get(name)
-        if bone:
-            remove_recursive(bone)
+    for name in ("face", "teeth.T", "teeth.B", "tongue"):
+        b = metarig.data.edit_bones.get(name)
+        if b:
+            kill(b)
 
     bpy.ops.object.mode_set(mode="OBJECT")
 
 
-def fit_metarig_to_mesh(metarig, props):
-    bpy.context.view_layer.objects.active = metarig
-    h = armature_height_world(
-        metarig,
-        preferred_names={
-            "spine", "spine.001", "spine.002", "spine.003", "spine.004", "spine.005",
-            "thigh.L", "thigh.R", "shin.L", "shin.R", "foot.L", "foot.R", "toe.L", "toe.R"
-        },
-    )
-    if h <= 1e-6:
-        raise RuntimeError("Metarig height invalid")
+# ---------------------------------------------------------------------------
+# "Scale it to the rig"
+# ---------------------------------------------------------------------------
 
-    scale = props["height"] / h
-    metarig.scale = tuple(v * scale for v in metarig.scale)
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+def scale_mesh_to_metarig(meshes, metarig):
+    """Uniform-scale every mesh so the combined height matches the metarig,
+    then translate so feet (min Z) and XY centre match the metarig's frame."""
+    target = armature_aabb(metarig)
+    target_h = target["size"].z
+    target_floor = target["min"].z
+    target_cx = (target["min"].x + target["max"].x) / 2
+    target_cy = (target["min"].y + target["max"].y) / 2
 
-    metarig.location = (0, 0, 0)
-    bpy.ops.object.transform_apply(location=True, rotation=False, scale=False)
-    print(f"[RigFlow] Metarig fit scale x{scale:.4f}")\
+    m = aabb(world_vertices(meshes))
+    mh = m["size"].z
+    if mh <= 1e-6:
+        raise RuntimeError(f"Mesh height {mh} is invalid")
+
+    factor = target_h / mh
+
+    # Bake location so every mesh origin sits at world (0,0,0). This makes the
+    # next per-object scale pivot about world origin for ALL meshes uniformly.
+    apply_transforms(meshes, location=True, rotation=True, scale=True)
+
+    for obj in meshes:
+        obj.scale = tuple(v * factor for v in obj.scale)
+    apply_transforms(meshes, scale=True)
+
+    m2 = aabb(world_vertices(meshes))
+    dx = target_cx - (m2["min"].x + m2["max"].x) / 2
+    dy = target_cy - (m2["min"].y + m2["max"].y) / 2
+    dz = target_floor - m2["min"].z
+    for obj in meshes:
+        obj.location.x += dx
+        obj.location.y += dy
+        obj.location.z += dz
+    apply_transforms(meshes, location=True)
+
+    log(f"Scaled mesh x{factor:.4f} → {target_h:.3f}m, aligned to metarig")
 
 
-def place_from_landmarks(metarig, landmarks):
-    bpy.context.view_layer.objects.active = metarig
+# ---------------------------------------------------------------------------
+# Landmarks (optional — used by /rigs/{id}/rerig-landmarks/)
+# ---------------------------------------------------------------------------
+
+def threejs_to_blender(pt, mesh_height):
+    """Three.js world-space (Y-up, `THREE_DISPLAY_HEIGHT` tall) → Blender."""
+    s = mesh_height / THREE_DISPLAY_HEIGHT
+    x, y, z = pt
+    return Vector((x * s, -z * s, y * s))
+
+
+def place_bones_from_landmarks(metarig, landmarks, mesh_height):
+    lmk = {k: threejs_to_blender(v, mesh_height) for k, v in landmarks.items()}
+    chin, groin = lmk["chin"], lmk["groin"]
+    lw, rw = lmk["left_wrist"], lmk["right_wrist"]
+    la, ra = lmk["left_ankle"], lmk["right_ankle"]
+
+    activate(metarig)
     bpy.ops.object.mode_set(mode="EDIT")
     eb = metarig.data.edit_bones
 
-    chin = landmarks["chin"]
-    groin = landmarks["groin"]
-    lw = landmarks["left_wrist"]
-    rw = landmarks["right_wrist"]
-    la = landmarks["left_ankle"]
-    ra = landmarks["right_ankle"]
-
-    body_h = max(0.2, chin.z - groin.z)
-
-    spine = ["spine", "spine.001", "spine.002", "spine.003", "spine.004", "spine.005"]
-    ratios = [0.0, 0.18, 0.38, 0.58, 0.78, 0.92]
+    spine = ["spine", "spine.001", "spine.002",
+             "spine.003", "spine.004", "spine.005"]
+    ratios = [0.0, 0.18, 0.38, 0.58, 0.78, 0.92, 1.0]
     for i, name in enumerate(spine):
         b = eb.get(name)
         if not b:
             continue
-        r0 = ratios[i]
-        r1 = ratios[i + 1] if i + 1 < len(ratios) else 1.0
+        r0, r1 = ratios[i], ratios[i + 1]
         b.head = groin + (chin - groin) * r0
         b.tail = groin + (chin - groin) * r1
 
-    for side, wrist in [("L", lw), ("R", rw)]:
-        shoulder_z = groin.z + body_h * 0.82
-        shoulder = Vector((wrist.x, wrist.y, shoulder_z))
-        elbow = shoulder + (wrist - shoulder) * 0.55 + Vector((0, 0.05, -0.02))
+    body_h = max(0.2, chin.z - groin.z)
+    for side, wrist in (("L", lw), ("R", rw)):
+        shoulder = Vector((wrist.x, wrist.y, groin.z + body_h * 0.82))
+        elbow    = shoulder + (wrist - shoulder) * 0.55 + Vector((0, 0.05, -0.02))
         hand_end = wrist + (wrist - elbow).normalized() * 0.07
-
-        for name, h, t in [
+        for name, h, t in (
             (f"upper_arm.{side}", shoulder, elbow),
-            (f"forearm.{side}", elbow, wrist),
-            (f"hand.{side}", wrist, hand_end),
-        ]:
+            (f"forearm.{side}",   elbow,    wrist),
+            (f"hand.{side}",      wrist,    hand_end),
+        ):
             b = eb.get(name)
             if b:
                 b.head, b.tail = h, t
 
-    for side, ankle in [("L", la), ("R", ra)]:
-        hip = Vector((ankle.x, ankle.y, groin.z))
-        knee = Vector((ankle.x * 0.97, ankle.y - 0.04, (groin.z + ankle.z) / 2 + 0.02))
-        toe = ankle + Vector((0, -0.09, 0))
-
-        for name, h, t in [
-            (f"thigh.{side}", hip, knee),
-            (f"shin.{side}", knee, ankle),
-            (f"foot.{side}", ankle, toe),
-            (f"toe.{side}", toe, toe + Vector((0, -0.04, 0))),
-        ]:
+    for side, ankle in (("L", la), ("R", ra)):
+        hip  = Vector((ankle.x, ankle.y, groin.z))
+        knee = Vector((ankle.x * 0.97,
+                       ankle.y - 0.04,
+                       (groin.z + ankle.z) / 2 + 0.02))
+        toe  = ankle + Vector((0, -0.09, 0))
+        for name, h, t in (
+            (f"thigh.{side}", hip,   knee),
+            (f"shin.{side}",  knee,  ankle),
+            (f"foot.{side}",  ankle, toe),
+            (f"toe.{side}",   toe,   toe + Vector((0, -0.04, 0))),
+        ):
             b = eb.get(name)
             if b:
                 b.head, b.tail = h, t
@@ -347,126 +401,170 @@ def place_from_landmarks(metarig, landmarks):
     bpy.ops.object.mode_set(mode="OBJECT")
 
 
+# ---------------------------------------------------------------------------
+# Generate, strip, bind, export
+# ---------------------------------------------------------------------------
+
 def generate_rig(metarig):
-    bpy.context.view_layer.objects.active = metarig
+    activate(metarig)
     bpy.ops.object.mode_set(mode="POSE")
     bpy.ops.pose.rigify_generate()
     bpy.ops.object.mode_set(mode="OBJECT")
     rig = bpy.context.active_object
-    if not rig or rig.type != "ARMATURE":
+    if not rig or rig.type != "ARMATURE" or rig is metarig:
         raise RuntimeError("Rigify generation failed")
-    print(f"[RigFlow] Generated rig: {rig.name}")
+    log(f"Generated rig: {rig.name}")
     return rig
 
 
-def ensure_rig_matches_mesh_height(meshes, rig):
-    mh = bbox_from_verts(all_world_verts(meshes))["size_z"]
-    rh = armature_height_world(
-        rig,
-        preferred_names={
-            "DEF-spine", "DEF-spine.001", "DEF-spine.002", "DEF-spine.003", "DEF-spine.004", "DEF-spine.005",
-            "DEF-thigh.L", "DEF-thigh.R", "DEF-shin.L", "DEF-shin.R", "DEF-foot.L", "DEF-foot.R", "DEF-toe.L", "DEF-toe.R"
-        },
-    )
-    if mh <= 1e-6 or rh <= 1e-6:
-        return
+def strip_to_deform_bones(rig):
+    """Keep only DEF-* bones, rebuilt into a clean DEF-only parent chain.
 
-    factor = mh / rh
-    factor = max(0.2, min(5.0, factor))
-    if abs(factor - 1.0) < 1e-3:
-        return
+    Rigify's generated rig parents DEF bones through ORG/MCH intermediaries
+    whose exact names vary by Blender/Rigify version — walking up and
+    matching on "DEF-{suffix}" works for the spine and legs but not for
+    arms. Rather than keep chasing that, we rebuild the DEF hierarchy
+    explicitly from a hard-coded table of Rigify's human-rig topology, and
+    fall back to name heuristics for twist/finger segments. Without this
+    the exported skin has DEF bones whose parent is a glTF Group, and
+    three.js SkeletonHelper only draws edges where parent.isBone."""
+    activate(rig)
+    bpy.ops.object.mode_set(mode="EDIT")
+    ebs = rig.data.edit_bones
 
-    rig.scale = tuple(v * factor for v in rig.scale)
-    bpy.context.view_layer.objects.active = rig
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    print(f"[RigFlow] Corrected rig height x{factor:.4f}")
+    parent_map = {
+        "DEF-spine.001": "DEF-spine",
+        "DEF-spine.002": "DEF-spine.001",
+        "DEF-spine.003": "DEF-spine.002",
+        "DEF-spine.004": "DEF-spine.003",
+        "DEF-spine.005": "DEF-spine.004",
+        "DEF-spine.006": "DEF-spine.005",
+    }
+    for side in ("L", "R"):
+        parent_map.update({
+            f"DEF-thigh.{side}":     "DEF-spine",
+            f"DEF-shin.{side}":      f"DEF-thigh.{side}",
+            f"DEF-foot.{side}":      f"DEF-shin.{side}",
+            f"DEF-toe.{side}":       f"DEF-foot.{side}",
+            f"DEF-shoulder.{side}":  "DEF-spine.003",
+            f"DEF-upper_arm.{side}": f"DEF-shoulder.{side}",
+            f"DEF-forearm.{side}":   f"DEF-upper_arm.{side}",
+            f"DEF-hand.{side}":      f"DEF-forearm.{side}",
+        })
+
+    for child_name, parent_name in parent_map.items():
+        c = ebs.get(child_name)
+        p = ebs.get(parent_name)
+        if c and p:
+            c.parent = p
+
+    # Twists/fingers + any DEF bone not in the explicit map.
+    for b in list(ebs):
+        if not b.name.startswith("DEF-") or b.name in parent_map:
+            continue
+
+        # DEF-upper_arm.L.001  →  DEF-upper_arm.L (trailing .NNN suffix)
+        parts = b.name.rsplit(".", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            base = ebs.get(parts[0])
+            if base is not None and base is not b and base.name.startswith("DEF-"):
+                b.parent = base
+                continue
+
+        # Fallback: walk the existing chain for any DEF ancestor, or an
+        # ORG-X/MCH-X whose DEF-X sibling exists.
+        p = b.parent
+        new_parent = None
+        while p is not None:
+            if p.name.startswith("DEF-") and p is not b:
+                new_parent = p
+                break
+            cp = None
+            for prefix in ("ORG-", "MCH-"):
+                if p.name.startswith(prefix):
+                    cp = ebs.get("DEF-" + p.name[len(prefix):])
+                    break
+            if cp is not None and cp is not b:
+                new_parent = cp
+                break
+            p = p.parent
+        b.parent = new_parent
+
+    names = [b.name for b in ebs if not b.name.startswith("DEF-")]
+    for n in names:
+        b = ebs.get(n)
+        if b:
+            ebs.remove(b)
+
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    log(f"Stripped to {len(rig.data.bones)} DEF bones:")
+    for b in rig.data.bones:
+        parent_name = b.parent.name if b.parent else "(root)"
+        log(f"  {b.name} ← {parent_name}")
 
 
-# ---------------------------------------------------------------------------
-# Bind / Export
-# ---------------------------------------------------------------------------
-
-def bind_auto(meshes, rig):
-    bpy.ops.object.select_all(action="DESELECT")
+def bind_auto_weights(meshes, rig):
+    deselect_all()
     for m in meshes:
         m.select_set(True)
     rig.select_set(True)
     bpy.context.view_layer.objects.active = rig
     bpy.ops.object.parent_set(type="ARMATURE_AUTO")
-    print(f"[RigFlow] Bound {len(meshes)} mesh(es) with ARMATURE_AUTO")
+    log(f"Bound {len(meshes)} mesh(es) with ARMATURE_AUTO")
 
 
-def clean_widgets_and_controls(rig):
-    widgets = [o for o in bpy.data.objects if o.name.startswith("WGT-")]
-    for obj in widgets:
-        for col in list(obj.users_collection):
-            col.objects.unlink(obj)
-        data = obj.data
-        bpy.data.objects.remove(obj, do_unlink=True)
-        if data and data.users == 0:
-            bpy.data.meshes.remove(data)
-    for col in list(bpy.data.collections):
-        if col.name.startswith("WGTS"):
-            bpy.data.collections.remove(col)
-
-    bpy.context.view_layer.objects.active = rig
-    bpy.ops.object.mode_set(mode="EDIT")
-    for b in [x for x in rig.data.edit_bones if not x.name.startswith("DEF-")]:
-        rig.data.edit_bones.remove(b)
-    bpy.ops.object.mode_set(mode="OBJECT")
-
-
-def export_glb(meshes, rig, output_path):
-    bpy.ops.object.select_all(action="DESELECT")
+def export_glb(meshes, rig, path):
+    deselect_all()
     rig.select_set(True)
     for m in meshes:
         m.select_set(True)
     bpy.context.view_layer.objects.active = rig
 
     bpy.ops.export_scene.gltf(
-        filepath=output_path,
+        filepath=path,
         export_format="GLB",
         export_animations=False,
         export_skins=True,
         use_selection=True,
         export_apply=True,
+        export_yup=True,
     )
-    print(f"[RigFlow] Exported: {output_path}")
+    log(f"Exported: {path}")
 
 
 RIGIFY_TO_MIXAMO = {
-    "DEF-spine": "Hips",
-    "DEF-spine.001": "Spine",
-    "DEF-spine.002": "Spine1",
-    "DEF-spine.003": "Spine2",
-    "DEF-spine.004": "Neck",
-    "DEF-spine.005": "Head",
-    "DEF-thigh.L": "LeftUpLeg",
-    "DEF-shin.L": "LeftLeg",
-    "DEF-foot.L": "LeftFoot",
-    "DEF-toe.L": "LeftToeBase",
-    "DEF-thigh.R": "RightUpLeg",
-    "DEF-shin.R": "RightLeg",
-    "DEF-foot.R": "RightFoot",
-    "DEF-toe.R": "RightToeBase",
-    "DEF-shoulder.L": "LeftShoulder",
+    "DEF-spine":       "Hips",
+    "DEF-spine.001":   "Spine",
+    "DEF-spine.002":   "Spine1",
+    "DEF-spine.003":   "Spine2",
+    "DEF-spine.004":   "Neck",
+    "DEF-spine.005":   "Head",
+    "DEF-thigh.L":     "LeftUpLeg",
+    "DEF-shin.L":      "LeftLeg",
+    "DEF-foot.L":      "LeftFoot",
+    "DEF-toe.L":       "LeftToeBase",
+    "DEF-thigh.R":     "RightUpLeg",
+    "DEF-shin.R":      "RightLeg",
+    "DEF-foot.R":      "RightFoot",
+    "DEF-toe.R":       "RightToeBase",
+    "DEF-shoulder.L":  "LeftShoulder",
     "DEF-upper_arm.L": "LeftArm",
-    "DEF-forearm.L": "LeftForeArm",
-    "DEF-hand.L": "LeftHand",
-    "DEF-shoulder.R": "RightShoulder",
+    "DEF-forearm.L":   "LeftForeArm",
+    "DEF-hand.L":      "LeftHand",
+    "DEF-shoulder.R":  "RightShoulder",
     "DEF-upper_arm.R": "RightArm",
-    "DEF-forearm.R": "RightForeArm",
-    "DEF-hand.R": "RightHand",
+    "DEF-forearm.R":   "RightForeArm",
+    "DEF-hand.R":      "RightHand",
 }
 
 
 def build_bone_map(rig):
     mapping = {}
     for b in rig.data.bones:
-        m = RIGIFY_TO_MIXAMO.get(b.name)
-        if m:
-            mapping[m] = b.name
-    print(f"[RigFlow] Bone map entries: {len(mapping)}")
+        mixamo = RIGIFY_TO_MIXAMO.get(b.name)
+        if mixamo:
+            mapping[mixamo] = b.name
     return mapping
 
 
@@ -475,55 +573,62 @@ def build_bone_map(rig):
 # ---------------------------------------------------------------------------
 
 def main():
-    enable_rigify()
     args = parse_args()
-
-    print("=" * 60)
-    print(f"[RigFlow] Input:  {args.input}")
-    print(f"[RigFlow] Output: {args.output}")
-    print(f"[RigFlow] Mode:   {'LANDMARK' if args.landmarks else 'AUTO'}")
-    print("=" * 60)
-
-    raw_landmarks = json.loads(args.landmarks) if args.landmarks else None
+    log(f"Input:  {args.input}")
+    log(f"Output: {args.output}")
+    log(f"Mode:   {'LANDMARK' if args.landmarks else 'AUTO'}")
 
     clear_scene()
     import_model(args.input, args.format)
+    strip_non_meshes()
 
     meshes = get_meshes()
     if not meshes:
-        raise RuntimeError("No mesh objects found after import")
-    print(f"[RigFlow] Mesh count: {len(meshes)}")
+        raise RuntimeError("No meshes found after import")
+    log(f"Mesh count: {len(meshes)}")
 
-    props = normalize_mesh(meshes)
+    orient_z_up(meshes)
+    validate_humanoid(meshes)
 
     metarig = create_metarig()
-    remove_face_rig(metarig)
-    fit_metarig_to_mesh(metarig, props)
+    remove_face_bones(metarig)
 
-    if raw_landmarks:
-        lmk = {k: threejs_to_blender(v) for k, v in raw_landmarks.items()}
-        place_from_landmarks(metarig, lmk)
+    scale_mesh_to_metarig(meshes, metarig)
+
+    if args.landmarks:
+        mesh_h = aabb(world_vertices(meshes))["size"].z
+        place_bones_from_landmarks(metarig, json.loads(args.landmarks), mesh_h)
 
     rig = generate_rig(metarig)
-    ensure_rig_matches_mesh_height(meshes, rig)
 
-    bind_auto(meshes, rig)
-    clean_widgets_and_controls(rig)
+    # Bind with the FULL Rigify rig — heat-diffusion auto-weights need the
+    # complete bone graph to produce smooth weights. Rigify tags only DEF
+    # bones use_deform=True, so weights land on DEF bones regardless.
+    bind_auto_weights(meshes, rig)
+
+    # Now that weights are baked into vertex groups (keyed by bone name),
+    # prune to a clean DEF-only skeleton for retargeting.
+    strip_to_deform_bones(rig)
+
+    # Metarig stays in the scene but isn't selected; export uses use_selection
+    # so it can't leak into the GLB.
     export_glb(meshes, rig, args.output)
 
     bone_map = build_bone_map(rig)
     Path(args.bones).write_text(json.dumps(bone_map, indent=2))
 
-    print("=" * 60)
-    print(f"[RigFlow] SUCCESS — {len(bone_map)} bones mapped")
-    print("=" * 60)
+    log(f"SUCCESS — {len(bone_map)} bones mapped")
 
 
 if __name__ == "__main__":
     try:
         main()
+    except NotHumanoidError as e:
+        # Single-line marker on stdout so tasks.py can extract the reason.
+        print(f"[RigFlow] NOT_HUMANOID: {e}")
+        sys.exit(2)
     except Exception as e:
-        print(f"\n[RigFlow] FATAL ERROR: {e}")
+        print(f"[RigFlow] FATAL: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

@@ -1,11 +1,13 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from .views import AnimationViewSet, CategoryListView
+from django.urls import path
 
-router = DefaultRouter()
-router.register(r"animations", AnimationViewSet, basename="animation")
+from .views import (
+    AnimationListOrUploadView,
+    AnimationCategoryListView,
+)
 
 urlpatterns = [
-    path("", include(router.urls)),
-    path("animations/categories/", CategoryListView.as_view(), name="animation-categories"),
+    path("animations/categories/", AnimationCategoryListView.as_view(),
+         name="animation-categories"),
+    path("animations/", AnimationListOrUploadView.as_view(),
+         name="animation-list-or-upload"),
 ]
