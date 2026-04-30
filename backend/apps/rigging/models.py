@@ -52,6 +52,24 @@ class RiggedModel(models.Model):
     error_message  = models.TextField(blank=True)
     processing_time_s = models.FloatField(null=True)
 
+    # Pose classification from the Blender pipeline. Helps the user
+    # understand whether their model is in a Rigify-friendly stance.
+    POSE_T        = "t_pose"
+    POSE_A        = "a_pose"
+    POSE_ARMS_DOWN = "arms_down"
+    POSE_UNCLEAR  = "unclear"
+    POSE_CHOICES = [
+        (POSE_T,        "T-pose"),
+        (POSE_A,        "A-pose"),
+        (POSE_ARMS_DOWN, "Arms down"),
+        (POSE_UNCLEAR,  "Unclear"),
+    ]
+    detected_pose = models.CharField(
+        max_length=16, choices=POSE_CHOICES, default=POSE_UNCLEAR, blank=True
+    )
+    pose_angle_deg = models.FloatField(null=True, blank=True)
+    pose_confidence = models.FloatField(default=0.0)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

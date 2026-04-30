@@ -167,6 +167,7 @@ class AnimationListThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         if request.user and request.user.is_authenticated:
             ident = request.user.pk
+            
         else:
             forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
             ident = forwarded.split(",")[0].strip() if forwarded else request.META.get("REMOTE_ADDR", "anon")

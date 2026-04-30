@@ -2,13 +2,17 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { uploadModel } from "@/lib/api";
+import { uploadModel, type ModelRotation } from "@/lib/api";
+import { RotationPreview } from "@/components/RotationPreview";
+import { IDENTITY_ROTATION_QUATERNION } from "@/lib/modelRotation";
 
 export default function UploadPage() {
   const router = useRouter();
   const fileInput = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState("");
+  const [rotation, setRotation] = useState<ModelRotation>({ x: 0, y: 0, z: 0 });
+  const [rotationQuaternion, setRotationQuaternion] = useState(IDENTITY_ROTATION_QUATERNION);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,6 +36,8 @@ export default function UploadPage() {
     }
     setFile(selected);
     setName(selected.name.replace(/\.[^.]+$/, "")); // use filename without extension as default name
+    setRotation({ x: 0, y: 0, z: 0 });
+    setRotationQuaternion(IDENTITY_ROTATION_QUATERNION);
     setError(null);
   };
 
@@ -40,18 +46,29 @@ export default function UploadPage() {
     setUploading(true);
     setError(null);
     try {
-      const { data } = await uploadModel(file, name);
+      const { data } = await uploadModel(file, name, rotation, rotationQuaternion);
       // Redirect to editor page with the new rig ID
       // The editor page will poll for completion and show the 3D viewer
       router.push(`/editor/${data.id}`);
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const response = typeof err === "object" && err !== null && "response" in err
+        ? (err as {
+          response?: {
+            data?: { detail?: string; error?: unknown };
+          };
+          message?: string;
+        }).response
+        : undefined;
+      const message = typeof err === "object" && err !== null && "message" in err
+        ? String((err as { message?: string }).message)
+        : null;
       const msg =
-        err.response?.data?.detail ||
-        (typeof err.response?.data?.error === "string"
-          ? err.response.data.error
+        response?.data?.detail ||
+        (typeof response?.data?.error === "string"
+          ? response.data.error
           : null) ||
-        err.response?.data?.error ||
-        err.message ||
+        response?.data?.error ||
+        message ||
         "Upload failed. Please try again.";
       setError(String(msg));
       setUploading(false);
@@ -106,6 +123,23 @@ export default function UploadPage() {
           }
         />
       </div>
+
+      {/* Rotation preview — user spins the model so its front faces the
+          camera before the rig is built. Replaces the auto-orient
+          guesswork that was getting characters back-facing or 90° off. */}
+      {file && (
+        <div style={{ marginBottom: "1.5rem" }}>
+          <RotationPreview
+            file={file}
+            rotation={rotation}
+            rotationQuaternion={rotationQuaternion}
+            onChangeRotation={(nextRotation, nextQuaternion) => {
+              setRotation(nextRotation);
+              setRotationQuaternion(nextQuaternion);
+            }}
+          />
+        </div>
+      )}
 
       {/* Name input */}
       {file && (

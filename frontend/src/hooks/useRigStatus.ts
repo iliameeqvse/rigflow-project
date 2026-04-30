@@ -77,35 +77,46 @@ export function useRigStatus(rigId: string | null) {
       pollInterval = setInterval(poll, POLL_INTERVAL_MS)
     }
 
-    const wsUrl = `${process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000"}/ws/rig/${rigId}/`
-    try {
-      ws = new WebSocket(wsUrl)
-    } catch {
-      startPolling()
-    }
-
-    if (ws) {
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          setState((prev) => ({
-            ...prev,
-            status: data.status ?? prev.status,
-            pct: data.pct ?? prev.pct,
-            step: data.step ?? prev.step,
-            glbUrl: data.rigged_glb_url ?? prev.glbUrl,
-            error: data.error ?? prev.error,
-          }))
-          if (data.status && TERMINAL_STATUSES.has(data.status)) {
-            stopPolling()
-            ws?.close()
-          }
-        } catch {
-          // Malformed WS frame — ignore, we'll catch up via polling.
-        }
+    // Only attempt WebSocket if explicitly configured. Without Channels
+    // routing wired into asgi.py, opening ws://localhost:8000/ws/rig/<id>/
+    // hits Django's HTTP handler, returns 404, and spams the dev console
+    // every editor mount. Set NEXT_PUBLIC_WS_URL once you actually wire up
+    // a Channels consumer; otherwise polling alone is fine.
+    const wsBase = process.env.NEXT_PUBLIC_WS_URL
+    if (wsBase) {
+      const wsUrl = `${wsBase}/ws/rig/${rigId}/`
+      try {
+        ws = new WebSocket(wsUrl)
+      } catch {
+        startPolling()
       }
-      ws.onerror = () => startPolling()
-      ws.onclose = () => startPolling()
+
+      if (ws) {
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            setState((prev) => ({
+              ...prev,
+              status: data.status ?? prev.status,
+              pct: data.pct ?? prev.pct,
+              step: data.step ?? prev.step,
+              glbUrl: data.rigged_glb_url ?? prev.glbUrl,
+              error: data.error ?? prev.error,
+            }))
+            if (data.status && TERMINAL_STATUSES.has(data.status)) {
+              stopPolling()
+              ws?.close()
+            }
+          } catch {
+            // Malformed WS frame — ignore, we'll catch up via polling.
+          }
+        }
+        ws.onerror = () => startPolling()
+        ws.onclose = () => startPolling()
+      }
+    } else {
+      // No WS configured — go straight to polling.
+      startPolling()
     }
 
     // Fallback: if the WS isn't open within WS_TIMEOUT_MS, poll anyway.

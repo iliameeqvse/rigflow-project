@@ -46,6 +46,7 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
             input_path     = Path(tmpdir) / f"input.{rig.original_format}"
             glb_output     = Path(tmpdir) / "rigged.glb"
             bone_data_path = Path(tmpdir) / "bones.json"
+            pose_data_path = Path(tmpdir) / "pose.json"
 
             with rig.original_file.open("rb") as f:
                 input_path.write_bytes(f.read())
@@ -66,6 +67,7 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                         "--input",  str(input_path),
                         "--output", str(glb_output),
                         "--bones",  str(bone_data_path),
+                        "--pose",   str(pose_data_path),
                         "--format", rig.original_format,
                     ]
                     if extra_args:
@@ -87,25 +89,10 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
 
                     if result.returncode == 0 and glb_output.exists():
                         blender_ran_ok = True
-                    elif result.returncode == 2:
-                        # Humanoid-gate rejection — surface to the user and
-                        # skip the passthrough that would otherwise save the
-                        # original mesh as a "successful" rig.
-                        reason = "Uploaded model is not humanoid."
-                        for line in (result.stdout or "").splitlines():
-                            marker = "[RigFlow] NOT_HUMANOID:"
-                            if marker in line:
-                                reason = line.split(marker, 1)[1].strip()
-                                break
-                        raise RuntimeError(reason)
                     else:
                         logger.warning("Blender exit %s", result.returncode)
                         rig.rig_log += f"\nSTDERR: {(result.stderr or '')[-2000:]}"
 
-                except RuntimeError:
-                    # Humanoid rejection — bubble up to the outer handler,
-                    # which sets status=failed with the human-readable reason.
-                    raise
                 except Exception as e:
                     logger.warning("Blender failed (%s) — passthrough.", e)
 
@@ -121,6 +108,18 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
 
             if bone_data_path.exists():
                 rig.bone_mapping = json.loads(bone_data_path.read_text())
+
+            if pose_data_path.exists():
+                try:
+                    pose_info = json.loads(pose_data_path.read_text())
+                    cls = pose_info.get("classification", "unclear")
+                    valid = {c[0] for c in RiggedModel.POSE_CHOICES}
+                    rig.detected_pose = cls if cls in valid else RiggedModel.POSE_UNCLEAR
+                    angle = pose_info.get("angle_deg")
+                    rig.pose_angle_deg = float(angle) if angle is not None else None
+                    rig.pose_confidence = float(pose_info.get("confidence", 0.0))
+                except (ValueError, TypeError) as e:
+                    logger.warning("Pose JSON malformed: %s", e)
 
         rig.status = RiggedModel.STATUS_DONE
         rig.processing_time_s = time.time() - start_time
@@ -144,8 +143,8 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
 
 # Keep Celery tasks for production (worker-based) deployments
 @shared_task(name="rigging.auto_rig_model")
-def auto_rig_model(rig_id: str) -> dict:
-    return _run_rig_pipeline(rig_id)
+def auto_rig_model(rig_id: str, extra_args: list = None) -> dict:
+    return _run_rig_pipeline(rig_id, extra_args=extra_args)
 
 
 @shared_task(name="rigging.auto_rig_model_with_landmarks")

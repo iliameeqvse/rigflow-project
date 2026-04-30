@@ -3,13 +3,14 @@ RigFlow Blender headless auto-rig script.
 
 Pipeline:
   1. Import mesh (FBX / GLB / OBJ), bake any import-time transforms
-  2. Orient: longest axis → Z (up), widest horizontal axis → X (T-pose arms)
+  2. Apply the user's preview-space rotation (no automatic axis guessing)
   3. Create Rigify human metarig at its default size — this is the scale target
   4. Scale mesh to match metarig height; align feet + XY centre with metarig
-  5. (Optional) Move metarig bones to user-supplied landmarks
-  6. Generate the final rig from the metarig — its scale is never touched
-  7. Parent mesh to rig with ARMATURE_AUTO (automatic weights)
-  8. Strip non-DEF bones, export GLB, write Rigify → Mixamo bone map
+  5. Classify pose (T / A / arms-down / unclear) and write to --pose JSON
+  6. (Optional) Move metarig bones to user-supplied landmarks
+  7. Generate the final rig from the metarig — its scale is never touched
+  8. Parent mesh to rig with ARMATURE_AUTO (automatic weights)
+  9. Strip non-DEF bones, export GLB, write Rigify → Mixamo bone map
 """
 
 import argparse
@@ -19,19 +20,15 @@ import sys
 from pathlib import Path
 
 import bpy
+from mathutils import Quaternion
 from mathutils import Vector
+from mathutils import Matrix
 
 
 # The frontend's ModelViewer rescales every preview to this many units tall,
 # and the landmark picker captures clicks in that space. We reuse the ratio
 # when converting landmark positions back into Blender world coords.
 THREE_DISPLAY_HEIGHT = 2.0
-
-
-class NotHumanoidError(RuntimeError):
-    """Raised when the input mesh fails the humanoid-shape validation.
-    Mapped to subprocess exit code 2 so the Django pipeline can distinguish
-    a user-facing rejection from a generic Blender failure."""
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +54,20 @@ def parse_args():
     p.add_argument("--input",     required=True)
     p.add_argument("--output",    required=True)
     p.add_argument("--bones",     required=True)
+    p.add_argument("--pose",      default=None,
+                   help="Optional path to write detected-pose JSON.")
     p.add_argument("--format",    default="fbx")
     p.add_argument("--landmarks", default=None)
+    # Manual preview-space Euler rotation in degrees. The upload preview runs
+    # in three.js Y-up; after step 1 we convert those axes back into Blender's
+    # Z-up space and trust the user's orientation over auto detection.
+    p.add_argument("--initial-rotation-x", type=float, default=0.0)
+    p.add_argument("--initial-rotation-y", type=float, default=0.0)
+    p.add_argument("--initial-rotation-z", type=float, default=0.0)
+    p.add_argument("--initial-rotation-qx", type=float, default=0.0)
+    p.add_argument("--initial-rotation-qy", type=float, default=0.0)
+    p.add_argument("--initial-rotation-qz", type=float, default=0.0)
+    p.add_argument("--initial-rotation-qw", type=float, default=0.0)
     return p.parse_args(argv)
 
 
@@ -164,94 +173,267 @@ def armature_aabb(arm):
 
 
 # ---------------------------------------------------------------------------
-# Orientation: "spin it to the right axis"
+# User-supplied rotation (the only orientation logic that runs)
 # ---------------------------------------------------------------------------
 
-def orient_z_up(meshes):
-    """Make the tallest axis Z and the widest horizontal axis X.
-    Handles Y-up FBX, Z-up FBX, glTF, OBJ without special-casing per format."""
-    # Bake any import-time object transforms so world AABB is trustworthy.
+def apply_matrix_world(meshes, matrix):
+    for obj in meshes:
+        obj.matrix_world = matrix @ obj.matrix_world
+
+
+def _preview_rotation_matrix(rotation_x, rotation_y, rotation_z):
+    """Convert preview-space Euler XYZ degrees into Blender-space rotation.
+
+    Preview axes use three.js Y-up:
+      preview X == blender X
+      preview Y == blender Z
+      preview Z == -blender Y
+    """
+    rx = math.radians(rotation_x)
+    ry = math.radians(rotation_y)
+    rz = math.radians(rotation_z)
+    preview_rot = (
+        Matrix.Rotation(rz, 4, "Z") @
+        Matrix.Rotation(ry, 4, "Y") @
+        Matrix.Rotation(rx, 4, "X")
+    )
+    blender_to_preview = Matrix((
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, -1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    ))
+    preview_to_blender = blender_to_preview.inverted()
+    return preview_to_blender @ preview_rot @ blender_to_preview
+
+
+def _preview_quaternion_matrix(qx, qy, qz, qw):
+    blender_to_preview = Matrix((
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, -1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    ))
+    preview_to_blender = blender_to_preview.inverted()
+    preview_rot = Quaternion((qw, qx, qy, qz)).normalized().to_matrix().to_4x4()
+    return preview_to_blender @ preview_rot @ blender_to_preview
+
+
+def apply_user_rotation(
+    meshes,
+    user_rotation_x=0.0,
+    user_rotation_y=0.0,
+    user_rotation_z=0.0,
+    user_rotation_quat=None,
+):
+    """Bake import-time transforms, then apply the user's preview-space
+    rotation if non-zero. No automatic axis correction.
+
+    The upload preview displays the model in whatever orientation the
+    three.js loader produced. The user rotates with the slider until the
+    model is upright and facing forward. We trust that exact orientation
+    here — Blender's FBX/glTF importer (already run by import_model) has
+    given us the equivalent state in its own Z-up frame, and the preview
+    quaternion is converted to that frame by `_preview_quaternion_matrix`.
+
+    Removing the old AABB-based "longest axis → Z" pass + the PCA arm-
+    axis + chest-normal facing detection eliminates the silent rotations
+    that diverged from what the user saw in the upload preview.
+    """
+    # Bake any import-time object transforms so world AABB / vertex data
+    # are in a clean baseline state for the rest of the pipeline.
     apply_transforms(meshes, location=True, rotation=True, scale=True)
 
-    b = aabb(world_vertices(meshes))
-    sx, sy, sz = b["size"].x, b["size"].y, b["size"].z
+    if not any(abs(v) > 0.5 for v in (user_rotation_x, user_rotation_y, user_rotation_z)):
+        log("User rotation = identity — leaving model in loader-supplied orientation.")
+        return
 
-    # Step 1: longest axis becomes Z
-    if sz < sx or sz < sy:
-        deselect_all()
-        for m in meshes:
-            m.select_set(True)
-        bpy.context.view_layer.objects.active = meshes[0]
+    if user_rotation_quat is not None:
+        qx, qy, qz, qw = user_rotation_quat
+        log(
+            f"User quaternion (preview frame): "
+            f"x={qx:+.4f}, y={qy:+.4f}, z={qz:+.4f}, w={qw:+.4f}"
+        )
+        rot_matrix = _preview_quaternion_matrix(qx, qy, qz, qw)
+        log("Rotation source: quaternion path")
+    else:
+        rot_matrix = _preview_rotation_matrix(
+            user_rotation_x,
+            user_rotation_y,
+            user_rotation_z,
+        )
+        log("Rotation source: Euler path (no quaternion supplied)")
 
-        if sy >= sx:
-            # Y tallest → rotate +90° about X: +Y → +Z
-            bpy.ops.transform.rotate(
-                value=math.radians(90),
-                orient_axis="X", orient_type="GLOBAL")
-            log("Rotated Y → Z (+90° X)")
-        else:
-            # X tallest → rotate -90° about Y: +X → +Z
-            bpy.ops.transform.rotate(
-                value=math.radians(-90),
-                orient_axis="Y", orient_type="GLOBAL")
-            log("Rotated X → Z (-90° Y)")
-        apply_transforms(meshes, rotation=True)
+    # Decompose the Blender-frame rotation so the rig_log shows what
+    # actually got applied — helps debug any preview-vs-editor drift.
+    as_euler = rot_matrix.to_euler("XYZ")
+    log(
+        f"Blender-frame rotation (XYZ Euler): "
+        f"X={math.degrees(as_euler.x):+.1f}°, "
+        f"Y={math.degrees(as_euler.y):+.1f}°, "
+        f"Z={math.degrees(as_euler.z):+.1f}°"
+    )
 
-    # Step 2: widest horizontal axis becomes X (T-pose arms extend along X).
-    # Threshold of 1.1 avoids spurious rotation for near-square silhouettes.
-    b = aabb(world_vertices(meshes))
-    if b["size"].y > b["size"].x * 1.1:
-        deselect_all()
-        for m in meshes:
-            m.select_set(True)
-        bpy.context.view_layer.objects.active = meshes[0]
-        bpy.ops.transform.rotate(
-            value=math.radians(-90),
-            orient_axis="Z", orient_type="GLOBAL")
-        log("Rotated Y → X (-90° Z) for T-pose alignment")
-        apply_transforms(meshes, rotation=True)
+    apply_matrix_world(meshes, rot_matrix)
+    log(
+        f"Applied user rotation: X(pitch)={user_rotation_x:+.1f}°, "
+        f"Y(yaw)={user_rotation_y:+.1f}°, Z(roll)={user_rotation_z:+.1f}°"
+    )
+    apply_transforms(meshes, rotation=True)
+
+    b2 = aabb(world_vertices(meshes))
+    log(
+        f"Post-rotation AABB (Blender frame): "
+        f"X[{b2['min'].x:+.2f},{b2['max'].x:+.2f}] "
+        f"Y[{b2['min'].y:+.2f},{b2['max'].y:+.2f}] "
+        f"Z[{b2['min'].z:+.2f},{b2['max'].z:+.2f}]"
+    )
 
 
 # ---------------------------------------------------------------------------
-# Humanoid-shape gate
+# Pose classification (T-pose / A-pose / arms-down)
 # ---------------------------------------------------------------------------
 
-def validate_humanoid(meshes):
-    """Reject clearly non-humanoid meshes before spending time on rigging.
+def _vertices_in_z_band(meshes, z_min, z_max):
+    """All world-space vertices whose Z falls within [z_min, z_max]."""
+    out = []
+    for obj in meshes:
+        for v in obj.data.vertices:
+            wv = obj.matrix_world @ v.co
+            if z_min <= wv.z <= z_max:
+                out.append(wv)
+    return out
 
-    Called after orient_z_up so Z is already the tallest axis and X is the
-    wider horizontal (arms / shoulders) while Y is the thinner one (body
-    depth). We look at two AABB ratios:
 
-      - longest / shortest ≥ 3    — a human is much taller than they are deep
-      - middle  / shortest ≥ 1.3  — shoulder/arm span is meaningfully wider
-                                    than body depth
+def detect_pose(meshes):
+    """Classify the mesh's pose by measuring arm-bone angle from horizontal.
 
-    Together these accept T-pose, A-pose, and standing characters while
-    rejecting cars, boxes, spheres, buildings, tall-thin trunks, etc.
-    Raises NotHumanoidError with a user-facing message on rejection."""
-    b = aabb(world_vertices(meshes))
-    dims = sorted((b["size"].x, b["size"].y, b["size"].z), reverse=True)
-    longest, middle, shortest = dims
+    Algorithm:
+      1. body_height = full mesh AABB Z size.
+      2. body_half_width = half-extent of the chest-band (45-60% height) in X.
+         This is the trunk's natural width; arm vertices are anything with
+         |x| beyond this.
+      3. For each side (L=x<0, R=x>0), take vertices in the shoulder Z-band
+         (60-82% height) outside the trunk. Anchor the shoulder at the
+         5th-percentile of |x| (closest-to-body), the hand at the
+         95th-percentile (farthest). Angle = atan2(|Δz|, |Δx|) gives the
+         arm tilt from horizontal.
+      4. Average the L and R angles. Asymmetric arms (>30° apart) → unclear.
+      5. Bands:
+            0-25°  T-pose      (arms horizontal)
+            25-60° A-pose      (arms at ~45°)
+            60-95° arms-down   (arms hanging)
+            else   unclear
 
-    if shortest <= 1e-6:
-        raise NotHumanoidError("Uploaded mesh is flat — cannot detect body.")
+    Returns a dict suitable for JSON serialization.
+    """
+    pose = {
+        "classification": "unclear",
+        "angle_deg": None,
+        "confidence": 0.0,
+        "reason": "",
+    }
 
-    if longest / shortest < 3.0:
-        raise NotHumanoidError(
-            f"Uploaded model is not humanoid: it's too bulky "
-            f"(tallest {longest:.2f} vs thinnest {shortest:.2f}, "
-            f"ratio {longest / shortest:.2f}:1 — expected at least 3:1)."
+    # Need vertices to work with.
+    try:
+        all_verts = world_vertices(meshes)
+    except RuntimeError:
+        pose["reason"] = "Mesh has no vertices."
+        return pose
+
+    box = aabb(all_verts)
+    body_height = box["size"].z
+    if body_height <= 1e-6:
+        pose["reason"] = "Mesh is flat — no measurable height."
+        return pose
+
+    z_floor = box["min"].z
+    chest_lo = z_floor + body_height * 0.45
+    chest_hi = z_floor + body_height * 0.60
+    chest = _vertices_in_z_band(meshes, chest_lo, chest_hi)
+    if len(chest) < 10:
+        pose["reason"] = "Too few vertices in chest band to estimate trunk width."
+        return pose
+    chest_xs = [abs(p.x) for p in chest]
+    # 80th percentile of |x| in chest band — robust against stray vertices.
+    chest_xs_sorted = sorted(chest_xs)
+    body_half_width = chest_xs_sorted[int(len(chest_xs_sorted) * 0.80)]
+    if body_half_width <= 1e-6:
+        pose["reason"] = "Trunk width is zero — mesh likely degenerate."
+        return pose
+
+    shoulder_lo = z_floor + body_height * 0.60
+    shoulder_hi = z_floor + body_height * 0.82
+    shoulder_band = _vertices_in_z_band(meshes, shoulder_lo, shoulder_hi)
+    if len(shoulder_band) < 20:
+        pose["reason"] = "Too few vertices in shoulder band."
+        return pose
+
+    side_angles = []
+    side_counts = {}
+    for side, sign in (("L", -1), ("R", +1)):
+        # Arm vertices: shoulder-band vertices beyond the trunk on this side.
+        arm = [p for p in shoulder_band
+               if (sign > 0 and p.x > body_half_width)
+               or (sign < 0 and p.x < -body_half_width)]
+        side_counts[side] = len(arm)
+        if len(arm) < 8:
+            continue
+        # Anchor at "closest to body" (5th percentile of |x|) and
+        # "farthest from body" (95th percentile). Median Z within each
+        # subset gives a stable shoulder/hand height estimate.
+        arm_sorted = sorted(arm, key=lambda p: abs(p.x))
+        n = len(arm_sorted)
+        near = arm_sorted[: max(1, n // 20)]
+        far  = arm_sorted[-max(1, n // 20):]
+        shoulder_x = sum(p.x for p in near) / len(near)
+        shoulder_z = sum(p.z for p in near) / len(near)
+        hand_x     = sum(p.x for p in far)  / len(far)
+        hand_z     = sum(p.z for p in far)  / len(far)
+        dx = abs(hand_x - shoulder_x)
+        dz = abs(hand_z - shoulder_z)
+        if dx <= 1e-6 and dz <= 1e-6:
+            continue
+        angle_deg = math.degrees(math.atan2(dz, dx))  # 0=horizontal, 90=vertical
+        side_angles.append(angle_deg)
+
+    if not side_angles:
+        pose["reason"] = (
+            f"Could not isolate arm vertices (L={side_counts.get('L', 0)}, "
+            f"R={side_counts.get('R', 0)})."
         )
+        return pose
 
-    if middle / shortest < 1.3:
-        raise NotHumanoidError(
-            f"Uploaded model is not humanoid: body is too symmetric "
-            f"(width {middle:.2f} vs depth {shortest:.2f}, "
-            f"ratio {middle / shortest:.2f}:1 — expected at least 1.3:1)."
+    if len(side_angles) == 2 and abs(side_angles[0] - side_angles[1]) > 30:
+        pose["reason"] = (
+            f"Arms are asymmetric (L={side_angles[0]:.1f}°, "
+            f"R={side_angles[1]:.1f}°)."
         )
+        pose["angle_deg"] = sum(side_angles) / 2
+        return pose
 
-    log(f"Humanoid OK: {longest:.2f} × {middle:.2f} × {shortest:.2f}")
+    avg_angle = sum(side_angles) / len(side_angles)
+    pose["angle_deg"] = avg_angle
+    if avg_angle <= 25:
+        pose["classification"] = "t_pose"
+    elif avg_angle <= 60:
+        pose["classification"] = "a_pose"
+    elif avg_angle <= 95:
+        pose["classification"] = "arms_down"
+    else:
+        pose["reason"] = f"Angle {avg_angle:.1f}° outside expected ranges."
+        return pose
+
+    # Confidence: how cleanly inside the band the angle sits, plus arm
+    # count (more vertices = more reliable).
+    band_centers = {"t_pose": 0, "a_pose": 42, "arms_down": 80}
+    band_widths  = {"t_pose": 25, "a_pose": 17, "arms_down": 17}
+    center = band_centers[pose["classification"]]
+    width  = band_widths[pose["classification"]]
+    band_conf = max(0.0, 1.0 - abs(avg_angle - center) / width)
+    sample_conf = min(1.0, sum(side_counts.values()) / 200.0)
+    pose["confidence"] = round(band_conf * sample_conf, 3)
+    return pose
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +515,18 @@ def scale_mesh_to_metarig(meshes, metarig):
         obj.location.z += dz
     apply_transforms(meshes, location=True)
 
-    log(f"Scaled mesh x{factor:.4f} → {target_h:.3f}m, aligned to metarig")
+    actual = aabb(world_vertices(meshes))["size"].z
+    log(
+        f"Scaled mesh x{factor:.4f} → {target_h:.3f}m target "
+        f"(combined AABB span actually {actual:.3f}m), aligned to metarig"
+    )
+    if abs(actual - target_h) > target_h * 0.05:
+        log(
+            f"  ⚠ AABB span differs from target by >5%. Likely cause: "
+            f"stray imported geometry (props, eye spheres) included in the "
+            f"bounding box. Landmark conversion uses the metarig height "
+            f"instead, which is unaffected."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +541,12 @@ def threejs_to_blender(pt, mesh_height):
 
 
 def place_bones_from_landmarks(metarig, landmarks, mesh_height):
+    log(f"Applying {len(landmarks)} landmarks (mesh_h={mesh_height:.3f}):")
+    for k, v in landmarks.items():
+        log(f"  three.js {k}: ({v[0]:.3f}, {v[1]:.3f}, {v[2]:.3f})")
     lmk = {k: threejs_to_blender(v, mesh_height) for k, v in landmarks.items()}
+    for k, v in lmk.items():
+        log(f"  blender   {k}: ({v.x:.3f}, {v.y:.3f}, {v.z:.3f})")
     chin, groin = lmk["chin"], lmk["groin"]
     lw, rw = lmk["left_wrist"], lmk["right_wrist"]
     la, ra = lmk["left_ankle"], lmk["right_ankle"]
@@ -356,6 +554,24 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
     activate(metarig)
     bpy.ops.object.mode_set(mode="EDIT")
     eb = metarig.data.edit_bones
+
+    # Capture pre-move positions of bones whose descendants should follow
+    # them. Bone heads/tails in edit mode are absolute armature-space
+    # coords, not parent-relative — so when we move hand.L the finger
+    # bones stay at the metarig's default hand position and end up
+    # floating disconnected. We delta-shift every descendant of these
+    # bones after the moves to keep the hierarchy intact.
+    pre_move = {}
+    for name in ("hand.L", "hand.R", "foot.L", "foot.R", "toe.L", "toe.R"):
+        b = eb.get(name)
+        if b:
+            pre_move[name] = b.head.copy()
+
+    # Track every bone we manually move so we can restrict the post-step
+    # roll recalculation to those. Untouched bones (fingers, face, breast,
+    # etc.) keep Rigify's hand-tuned default rolls — recalculating them to
+    # global +Z makes finger bones point upward and the hands look broken.
+    placed = set()
 
     spine = ["spine", "spine.001", "spine.002",
              "spine.003", "spine.004", "spine.005"]
@@ -367,6 +583,7 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
         r0, r1 = ratios[i], ratios[i + 1]
         b.head = groin + (chin - groin) * r0
         b.tail = groin + (chin - groin) * r1
+        placed.add(name)
 
     body_h = max(0.2, chin.z - groin.z)
     for side, wrist in (("L", lw), ("R", rw)):
@@ -381,6 +598,7 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
             b = eb.get(name)
             if b:
                 b.head, b.tail = h, t
+                placed.add(name)
 
     for side, ankle in (("L", la), ("R", ra)):
         hip  = Vector((ankle.x, ankle.y, groin.z))
@@ -397,8 +615,56 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
             b = eb.get(name)
             if b:
                 b.head, b.tail = h, t
+                placed.add(name)
+
+    # Shift every descendant of the moved hand / foot / toe bones by the
+    # same delta their parent moved. Without this finger and toe segments
+    # stay at metarig-default coords (the "hands off" / floating fingers
+    # symptom). Translation only — preserves each descendant's relative
+    # length and roll, so Rigify still generates sensible bones.
+    for name, old_head in pre_move.items():
+        b = eb.get(name)
+        if not b:
+            continue
+        delta = b.head - old_head
+        if delta.length < 1e-6:
+            continue
+        stack = list(b.children)
+        shifted = 0
+        while stack:
+            child = stack.pop()
+            child.head = child.head + delta
+            child.tail = child.tail + delta
+            shifted += 1
+            stack.extend(child.children)
+        if shifted:
+            log(f"Offset {shifted} descendants of {name} by {delta.length:.3f}m")
+
+    # Recompute rolls only on bones we just moved. After head/tail edits
+    # the previous roll values are arbitrary relative to the new bone
+    # direction, so Rigify produces twisted limbs. Selecting only `placed`
+    # leaves finger / breast / pelvis bones with Rigify's hand-tuned
+    # defaults — recalcing them to global +Z is what was making the hands
+    # render with bones pointing the wrong way.
+    #
+    # IMPORTANT: calculate_roll needs head AND tail selection, not just
+    # b.select. Without all three flags set, the operator either silently
+    # skips or raises depending on Blender version, which kills the
+    # subprocess and dumps the pipeline into passthrough.
+    for b in eb:
+        sel = b.name in placed
+        b.select = sel
+        b.select_head = sel
+        b.select_tail = sel
+    if placed:
+        try:
+            bpy.ops.armature.calculate_roll(type="GLOBAL_POS_Z")
+            log(f"Recalculated rolls on {len(placed)} placed bones")
+        except Exception as e:
+            log(f"calculate_roll skipped: {e}")
 
     bpy.ops.object.mode_set(mode="OBJECT")
+    log("Landmark placement complete")
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +780,56 @@ def bind_auto_weights(meshes, rig):
     log(f"Bound {len(meshes)} mesh(es) with ARMATURE_AUTO")
 
 
+def patch_orphan_vertex_weights(meshes, rig):
+    """Heat-diffusion ARMATURE_AUTO fails for bones it can't reach inside
+    the mesh volume — they get no vertex weights, and the corresponding
+    mesh regions render at origin in three.js (the "two dots moving"
+    bug). For every vertex with sum-of-weights ≈ 0, fall back to assigning
+    full weight to the nearest deform bone's midpoint. Slow but bounded
+    (O(V × B), ~50k×30 ≈ 1.5M ops, runs in a couple of seconds)."""
+    bone_targets = []
+    for b in rig.data.bones:
+        if not b.use_deform:
+            continue
+        head = rig.matrix_world @ b.head_local
+        tail = rig.matrix_world @ b.tail_local
+        bone_targets.append((b.name, (head + tail) / 2))
+    if not bone_targets:
+        return
+    deform_names = {name for name, _ in bone_targets}
+
+    patched_total = 0
+    for mesh_obj in meshes:
+        vg_by_name = {vg.name: vg for vg in mesh_obj.vertex_groups}
+        # Pre-resolve the bone names that have a vertex group; create
+        # missing ones lazily on first use.
+        def vg_for(name):
+            vg = vg_by_name.get(name)
+            if vg is None:
+                vg = mesh_obj.vertex_groups.new(name=name)
+                vg_by_name[name] = vg
+            return vg
+
+        patched_here = 0
+        for v in mesh_obj.data.vertices:
+            total = 0.0
+            for g in v.groups:
+                group = mesh_obj.vertex_groups[g.group]
+                if group.name in deform_names:
+                    total += g.weight
+            if total > 1e-4:
+                continue
+            world_pos = mesh_obj.matrix_world @ v.co
+            nearest = min(bone_targets,
+                          key=lambda bt: (bt[1] - world_pos).length_squared)
+            vg_for(nearest[0]).add([v.index], 1.0, "REPLACE")
+            patched_here += 1
+        patched_total += patched_here
+        if patched_here:
+            log(f"  Patched {patched_here} orphan verts in {mesh_obj.name}")
+    log(f"Skinning fallback: patched {patched_total} orphan vertices total")
+
+
 def export_glb(meshes, rig, path):
     deselect_all()
     rig.select_set(True)
@@ -587,16 +903,57 @@ def main():
         raise RuntimeError("No meshes found after import")
     log(f"Mesh count: {len(meshes)}")
 
-    orient_z_up(meshes)
-    validate_humanoid(meshes)
+    apply_user_rotation(
+        meshes,
+        user_rotation_x=args.initial_rotation_x,
+        user_rotation_y=args.initial_rotation_y,
+        user_rotation_z=args.initial_rotation_z,
+        user_rotation_quat=(
+            args.initial_rotation_qx,
+            args.initial_rotation_qy,
+            args.initial_rotation_qz,
+            args.initial_rotation_qw,
+        ) if abs(args.initial_rotation_qw) > 1e-6 or any(
+            abs(v) > 1e-6
+            for v in (
+                args.initial_rotation_qx,
+                args.initial_rotation_qy,
+                args.initial_rotation_qz,
+            )
+        ) else None,
+    )
 
     metarig = create_metarig()
     remove_face_bones(metarig)
 
     scale_mesh_to_metarig(meshes, metarig)
 
+    # Pose classification — runs after scaling so the chest/shoulder bands
+    # are at predictable Z fractions of body height. Result is logged and
+    # written to the --pose sidecar JSON for tasks.py to read.
+    pose_info = detect_pose(meshes)
+    log(
+        f"Pose: {pose_info['classification']} "
+        f"(angle={pose_info['angle_deg']!r}, "
+        f"confidence={pose_info['confidence']:.2f})"
+    )
+    if pose_info.get("reason"):
+        log(f"  Reason: {pose_info['reason']}")
+    if args.pose:
+        try:
+            Path(args.pose).write_text(json.dumps(pose_info, indent=2))
+        except Exception as e:
+            log(f"  Failed to write pose JSON: {e}")
+
     if args.landmarks:
-        mesh_h = aabb(world_vertices(meshes))["size"].z
+        # Use the metarig's height as the canonical reference instead of
+        # recomputing the mesh AABB. scale_mesh_to_metarig already aligned
+        # the body to this; reading the live mesh AABB here picks up stray
+        # imported geometry (decorative spheres, props) that inflate the
+        # bounding box and double the landmark conversion scale, which puts
+        # the metarig bones at 2× their correct height.
+        mesh_h = armature_aabb(metarig)["size"].z
+        log(f"Landmark conversion using metarig height: {mesh_h:.3f}m")
         place_bones_from_landmarks(metarig, json.loads(args.landmarks), mesh_h)
 
     rig = generate_rig(metarig)
@@ -605,6 +962,18 @@ def main():
     # complete bone graph to produce smooth weights. Rigify tags only DEF
     # bones use_deform=True, so weights land on DEF bones regardless.
     bind_auto_weights(meshes, rig)
+
+    # Catch any vertex the heat-diffusion algorithm couldn't reach.
+    # Without this, those vertices have weight=0 and render collapsed at
+    # origin once the rig animates ("two dots moving" symptom). Guarded
+    # so a failure here can't kill the rest of the pipeline — without
+    # it the rig still exports, just with the orphan-vertex bug.
+    try:
+        patch_orphan_vertex_weights(meshes, rig)
+    except Exception as e:
+        log(f"Skinning fallback failed (non-fatal): {e}")
+        import traceback
+        log(traceback.format_exc())
 
     # Now that weights are baked into vertex groups (keyed by bone name),
     # prune to a clean DEF-only skeleton for retargeting.
@@ -623,10 +992,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except NotHumanoidError as e:
-        # Single-line marker on stdout so tasks.py can extract the reason.
-        print(f"[RigFlow] NOT_HUMANOID: {e}")
-        sys.exit(2)
     except Exception as e:
         print(f"[RigFlow] FATAL: {e}")
         import traceback

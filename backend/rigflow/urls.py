@@ -1,7 +1,8 @@
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
+from django.views.static import serve
 
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -36,3 +37,10 @@ urlpatterns = [
 
 if getattr(settings, "MEDIA_ROOT", None):
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    # static() above only registers when DEBUG=True. Add an explicit route so
+    # media is served by Django in containerized dev (no S3, DEBUG=False).
+    if not settings.DEBUG and not getattr(settings, "AWS_BUCKET_NAME", ""):
+        media_url = settings.MEDIA_URL.lstrip("/")
+        urlpatterns += [
+            re_path(rf"^{media_url}(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
+        ]

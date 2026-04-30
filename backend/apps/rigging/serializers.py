@@ -16,6 +16,10 @@ class RiggedModelSerializer(serializers.ModelSerializer):
             "bone_mapping",
             "file_size_mb",
             "error_message",
+            "rig_log",
+            "detected_pose",
+            "pose_angle_deg",
+            "pose_confidence",
             "created_at",
         ]
         read_only_fields = fields

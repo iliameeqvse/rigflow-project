@@ -1,4 +1,5 @@
 import json
+import threading
 import time as time_module
 from django.contrib.auth import get_user_model
 from django.utils.decorators import method_decorator
@@ -12,7 +13,7 @@ from drf_spectacular.utils import extend_schema, OpenApiResponse
 
 from .models import RiggedModel
 from .serializers import RiggedModelSerializer, RigStatusSerializer
-from .tasks import _run_rig_pipeline
+from .tasks import _run_rig_pipeline, auto_rig_model, auto_rig_model_with_landmarks
 from apps.throttles import (
     AnonUploadThrottle,
     RigUploadThrottle,
@@ -50,10 +51,27 @@ class RiggedModelViewSet(ModelViewSet):
     http_method_names  = ["get", "post", "head", "options"]
 
     def get_permissions(self):
-        # Status polling is public so the frontend can check without a token
-        if self.action == "status_action":
+        # Status polling AND detail read are public so the editor page can
+        # surface bone_mapping / rig_log without 404'ing on rigs that were
+        # created via the anonymous demo-profile fallback in `create()`.
+        if self.action in ("status_action", "retrieve"):
             return [AllowAny()]
         return [IsAuthenticated()]
+
+    def get_authenticators(self):
+        # AllowAny is not enough on its own: DRF runs authentication first,
+        # and JWTAuthentication raises 401 on a stale/invalid token *before*
+        # the permission check. That breaks the editor's status polling for
+        # any visitor whose localStorage holds a token for a deleted user
+        # (e.g. after a DB wipe). Skip authentication entirely on public
+        # actions so a bad header is treated like no header.
+        # NOTE: self.action isn't set yet at this point (it's assigned by
+        # initialize_request *after* this runs), so we resolve via action_map.
+        method = self.request.method.lower() if getattr(self, "request", None) else None
+        action = (getattr(self, "action_map", None) or {}).get(method)
+        if action in ("status_action", "retrieve"):
+            return []
+        return super().get_authenticators()
 
     def get_throttles(self):
         """
@@ -73,6 +91,10 @@ class RiggedModelViewSet(ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
+        # Public actions skip the per-user filter so demo-profile rigs and
+        # rigs uploaded under a different auth state remain readable.
+        if self.action in ("status_action", "retrieve"):
+            return qs
         if self.request.user.is_authenticated and hasattr(self.request.user, "profile"):
             return qs.filter(user=self.request.user.profile)
         return qs.none()
@@ -102,6 +124,22 @@ class RiggedModelViewSet(ModelViewSet):
         if ext not in {"fbx", "glb", "gltf", "obj"}:
             return Response({"error": f"Unsupported format: .{ext}."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Manual preview-space Euler rotation in degrees. Form fields arrive
+        # as strings; tolerate junk (default 0).
+        def parse_rotation(name):
+            try:
+                return float(request.data.get(name, 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        rotation_x = parse_rotation("rotation_x")
+        rotation_y = parse_rotation("rotation_y")
+        rotation_z = parse_rotation("rotation_z")
+        rotation_qx = parse_rotation("rotation_qx")
+        rotation_qy = parse_rotation("rotation_qy")
+        rotation_qz = parse_rotation("rotation_qz")
+        rotation_qw = parse_rotation("rotation_qw")
+
         if self.request.user.is_authenticated and hasattr(self.request.user, "profile"):
             profile = self.request.user.profile
         else:
@@ -113,8 +151,21 @@ class RiggedModelViewSet(ModelViewSet):
             file_size_mb=round(file.size / (1024 * 1024), 2),
             status=RiggedModel.STATUS_PENDING,
         )
-        _run_rig_pipeline(str(rig.id))
-        rig.refresh_from_db()
+        extra = None
+        if any(abs(v) > 0.5 for v in (rotation_x, rotation_y, rotation_z)):
+            extra = [
+                "--initial-rotation-x", str(rotation_x),
+                "--initial-rotation-y", str(rotation_y),
+                "--initial-rotation-z", str(rotation_z),
+            ]
+            if abs(rotation_qw) > 1e-6 or any(abs(v) > 1e-6 for v in (rotation_qx, rotation_qy, rotation_qz)):
+                extra.extend([
+                    "--initial-rotation-qx", str(rotation_qx),
+                    "--initial-rotation-qy", str(rotation_qy),
+                    "--initial-rotation-qz", str(rotation_qz),
+                    "--initial-rotation-qw", str(rotation_qw),
+                ])
+        auto_rig_model.delay(str(rig.id), extra_args=extra)
         return Response(self.get_serializer(rig).data, status=status.HTTP_201_CREATED)
 
     @extend_schema(
@@ -170,8 +221,7 @@ class RiggedModelViewSet(ModelViewSet):
         rig.processing_time_s = None
         rig.save()
 
-        _run_rig_pipeline(str(rig.id))
-        rig.refresh_from_db()
+        auto_rig_model.delay(str(rig.id))
         return Response(self.get_serializer(rig, context={"request": request}).data)
 
     @extend_schema(
@@ -218,12 +268,6 @@ class RiggedModelViewSet(ModelViewSet):
         rig.processing_time_s = None
         rig.save()
 
-        import threading
-        threading.Thread(
-            target=_run_rig_pipeline,
-            args=(str(rig.id),),
-            kwargs={"extra_args": ["--landmarks", json.dumps(landmarks)]},
-            daemon=True,
-        ).start()
+        auto_rig_model_with_landmarks.delay(str(rig.id), landmarks)
 
         return Response({"status": "pending", "rig_id": str(rig.id)}, status=status.HTTP_202_ACCEPTED)

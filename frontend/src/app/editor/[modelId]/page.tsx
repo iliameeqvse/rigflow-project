@@ -49,15 +49,40 @@ export default function EditorPage() {
   const [landmarkError, setLandmarkError]           = useState<string | null>(null);
   const [landmarkQueued, setLandmarkQueued]         = useState(false);
   const [boneMapping, setBoneMapping]               = useState<Record<string, string> | null>(null);
+  const [rigLog, setRigLog]                         = useState<string>("");
+  const [showLog, setShowLog]                       = useState(false);
+  type DetectedPose = "t_pose" | "a_pose" | "arms_down" | "unclear";
+  const [detectedPose, setDetectedPose]             = useState<DetectedPose | null>(null);
+  const [poseAngle, setPoseAngle]                   = useState<number | null>(null);
+  const [poseConfidence, setPoseConfidence]         = useState<number>(0);
 
-  // Fetch the rig's Mixamo→DEF bone map once rigging completes. The status
-  // endpoint doesn't include it; detail endpoint does.
+  // Fetch the rig's Mixamo→DEF bone map, Blender stdout, and pose
+  // classification once rigging completes. The status endpoint doesn't
+  // carry these — only the detail endpoint does.
   useEffect(() => {
-    if (status !== "done" || !modelId) return;
-    api.get<{ bone_mapping: Record<string, string> }>(`/rigs/${modelId}/`)
-      .then(({ data }) => setBoneMapping(data.bone_mapping ?? {}))
-      .catch(() => setBoneMapping({}));
-  }, [status, modelId]);
+    if ((status !== "done" && status !== "failed") || !modelId) return;
+    api.get<{
+      bone_mapping: Record<string, string>;
+      rig_log: string;
+      detected_pose?: DetectedPose;
+      pose_angle_deg?: number | null;
+      pose_confidence?: number;
+    }>(`/rigs/${modelId}/`)
+      .then(({ data }) => {
+        setBoneMapping(data.bone_mapping ?? {});
+        setRigLog(data.rig_log ?? "");
+        setDetectedPose(data.detected_pose ?? null);
+        setPoseAngle(data.pose_angle_deg ?? null);
+        setPoseConfidence(data.pose_confidence ?? 0);
+      })
+      .catch(() => {
+        setBoneMapping({});
+        setRigLog("");
+        setDetectedPose(null);
+        setPoseAngle(null);
+        setPoseConfidence(0);
+      });
+  }, [status, modelId, landmarkQueued]);
 
   const modelReady = hasEmbedded !== null;
   const playLabel  = hasEmbedded ? "▶ Embedded animation" : "👋 Wave animation";
@@ -79,9 +104,14 @@ export default function EditorPage() {
     if (!modelId) return;
     setLandmarkSubmitting(true);
     setLandmarkError(null);
+    console.log("[Landmarks] POST /rerig-landmarks/", landmarks);
     try {
-      // Returns 202 immediately — Blender runs in a background thread
-      await api.post(`/rigs/${modelId}/rerig-landmarks/`, { landmarks });
+      const r = await api.post(`/rigs/${modelId}/rerig-landmarks/`, { landmarks });
+      console.log("[Landmarks] Response:", r.status, r.data);
+
+      // Wipe the cached log so the next "Show log" press shows the new run.
+      setRigLog("");
+      setShowLog(false);
 
       // Switch back to the view tab — the progress bar will appear automatically
       // because useRigStatus will poll and see status = "pending" → "processing" → "done"
@@ -92,7 +122,21 @@ export default function EditorPage() {
       setShowSkeleton(false);
       setTab("view");
     } catch (err: any) {
-      setLandmarkError(err.response?.data?.error || err.message || "Failed to apply landmarks.");
+      console.error("[Landmarks] POST failed:", err);
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail || err.response?.data?.error;
+      let msg: string;
+      if (status === 429) {
+        // DRF includes a Retry-After hint on rate-limit responses.
+        const retry = err.response?.data?.detail
+          ?? "Try again later.";
+        msg = `Rate limit reached. ${retry} (Local dev tip: restart Django to reset throttle counters; settings/local.py already relaxes the caps to 10000/hour.)`;
+      } else if (status === 401) {
+        msg = "You need to be logged in to apply landmarks.";
+      } else {
+        msg = detail || err.message || "Failed to apply landmarks.";
+      }
+      setLandmarkError(msg);
       setLandmarkSubmitting(false);
     }
   };
@@ -214,7 +258,66 @@ export default function EditorPage() {
                     {rerigging ? "Rerigging…" : "🔄 Rerig model"}
                   </span>
                 </Btn>
+                {rigLog && (
+                  <Btn onClick={() => setShowLog((v) => !v)} active={showLog} color="#888">
+                    {showLog ? "📜 Hide log" : "📜 Show log"}
+                  </Btn>
+                )}
+                {detectedPose && (() => {
+                  const labels: Record<DetectedPose, string> = {
+                    t_pose:    "T-pose",
+                    a_pose:    "A-pose",
+                    arms_down: "Arms down",
+                    unclear:   "Pose unclear",
+                  };
+                  // Yellow when not T-pose: Rigify's metarig is built for T,
+                  // so anything else risks weight-painting artefacts.
+                  const isOk = detectedPose === "t_pose";
+                  const color = isOk ? "rgba(0,230,118,0.9)" : "rgba(245,158,11,0.95)";
+                  const bg    = isOk ? "rgba(0,230,118,0.08)" : "rgba(245,158,11,0.08)";
+                  const tip = isOk
+                    ? `Detected ${labels[detectedPose]} — Rigify weights cleanly on this pose.`
+                    : `Detected ${labels[detectedPose]}. Rigify expects T-pose for cleanest weighting; arms may bind imperfectly.`;
+                  const angleText =
+                    poseAngle !== null && Number.isFinite(poseAngle)
+                      ? ` · ${poseAngle.toFixed(0)}°`
+                      : "";
+                  const confText =
+                    poseConfidence > 0
+                      ? ` (${Math.round(poseConfidence * 100)}%)`
+                      : "";
+                  return (
+                    <span
+                      title={tip}
+                      style={{
+                        padding: "0.5rem 0.85rem",
+                        borderRadius: 8,
+                        border: `1px solid ${color}`,
+                        background: bg,
+                        color,
+                        fontWeight: 600,
+                        fontSize: "0.85rem",
+                      }}
+                    >
+                      🧍 {labels[detectedPose]}{angleText}{confText}
+                    </span>
+                  );
+                })()}
               </div>
+
+              {showLog && rigLog && (
+                <pre
+                  style={{
+                    background: "#0a0a14", border: "1px solid #2a2a3d",
+                    borderRadius: 8, padding: "0.75rem 1rem",
+                    color: "#9ab", fontSize: "0.72rem",
+                    maxHeight: 240, overflow: "auto",
+                    whiteSpace: "pre-wrap", marginBottom: "0.75rem",
+                  }}
+                >
+                  {rigLog}
+                </pre>
+              )}
 
               {showSkeleton && (
                 <p style={{ color: "#a78bfa", fontSize: "0.82rem", marginBottom: "0.75rem" }}>
@@ -232,6 +335,7 @@ export default function EditorPage() {
               )}
 
               <ModelViewer
+                key={glbUrl}
                 glbUrl={glbUrl} height={560}
                 playAnimation={playAnimation}
                 showSkeleton={showSkeleton}
@@ -263,6 +367,7 @@ export default function EditorPage() {
               )}
 
               <LandmarkEditor
+                key={glbUrl}
                 glbUrl={glbUrl}
                 onSubmit={handleLandmarkSubmit}
                 submitting={landmarkSubmitting}
@@ -293,6 +398,7 @@ export default function EditorPage() {
                 </div>
               ) : (
                 <AnimationPlayer
+                  key={glbUrl}
                   rigGlbUrl={glbUrl}
                   boneMapping={boneMapping}
                 />

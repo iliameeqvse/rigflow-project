@@ -9,13 +9,12 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-rigflow123}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "rigflow", "-d", "rigflow"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 60s
 
   # ── Redis ──────────────────────────────────────────────────────────────────
   redis:

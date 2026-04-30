@@ -100,7 +100,7 @@ function SkeletonOverlay({ object }: { object: THREE.Object3D }) {
       pushHelper(sm, `skinned:${sm.skeleton.uuid}`);
 
       // Path B fallback: helper from skeleton root bone chain.
-      const rootBone = sm.skeleton.bones.find((b) => !b.parent || !(b.parent as THREE.Object3D).isBone)
+      const rootBone = sm.skeleton.bones.find((b) => !b.parent || !(b.parent as THREE.Bone).isBone)
         ?? sm.skeleton.bones[0];
       pushHelper(rootBone, `bone:${rootBone.uuid}`);
     });
