@@ -192,6 +192,10 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 
 CELERY_BROKER_URL     = REDIS_URL
 CELERY_RESULT_BACKEND = "django-db"
+# Worker subscribes to "default" (see docker-compose celery `-Q` flag), not the
+# Celery default "celery" queue. Without this override tasks publish to "celery"
+# and sit forever.
+CELERY_TASK_DEFAULT_QUEUE = "default"
 
 CHANNEL_LAYERS = {
     "default": {

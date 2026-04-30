@@ -107,6 +107,9 @@ export interface RiggedModel {
   rigged_glb_url: string | null;
   bone_mapping: Record<string, string>;
   file_size_mb: number;
+  detected_pose?: "t_pose" | "a_pose" | "arms_down" | "unclear";
+  pose_angle_deg?: number | null;
+  pose_confidence?: number;
   created_at: string;
 }
 
@@ -133,12 +136,39 @@ export interface Animation {
   download_count: number;
 }
 
+export interface ModelRotation {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface ModelRotationQuaternion {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}
+
 // ── API calls ─────────────────────────────────────────────────────────────────
 
-export const uploadModel = (file: File, name: string) => {
+export const uploadModel = (
+  file: File,
+  name: string,
+  rotation: ModelRotation = { x: 0, y: 0, z: 0 },
+  rotationQuaternion?: ModelRotationQuaternion,
+) => {
   const form = new FormData();
   form.append("file", file);
   form.append("name", name);
+  form.append("rotation_x", String(rotation.x));
+  form.append("rotation_y", String(rotation.y));
+  form.append("rotation_z", String(rotation.z));
+  if (rotationQuaternion) {
+    form.append("rotation_qx", String(rotationQuaternion.x));
+    form.append("rotation_qy", String(rotationQuaternion.y));
+    form.append("rotation_qz", String(rotationQuaternion.z));
+    form.append("rotation_qw", String(rotationQuaternion.w));
+  }
   return api.post<RiggedModel>("/rigs/", form);
 };
 

@@ -24,3 +24,29 @@ EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 # Run Celery tasks synchronously in local dev so you don't need a worker
 # running all the time.
 CELERY_TASK_ALWAYS_EAGER = True
+
+
+# Relax all throttle rates for local development. The production caps
+# (rig_upload=10/hour, user=10/min, etc.) are trivial to hit while
+# iterating on landmark placement / animations / re-rigs and produce
+# confusing 429 errors mid-debug. Throttle counters live in the cache,
+# which is local-memory by default — they reset whenever runserver
+# restarts, so this is purely a dev-quality-of-life change.
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,
+    "DEFAULT_THROTTLE_RATES": {
+        **REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"],
+        "anon":             "10000/minute",
+        "user":             "10000/minute",
+        "anon_upload":      "10000/minute",
+        "user_upload":      "10000/hour",
+        "rig_upload":       "10000/hour",
+        "animation_upload": "10000/hour",
+        "rig_list":         "10000/minute",
+        "animation_list":   "10000/minute",
+        "posts_list":       "10000/minute",
+        "posts_create":     "10000/minute",
+        "post_burst":       "10000/10seconds",
+        "strict_ip":        "10000/minute",
+    },
+}

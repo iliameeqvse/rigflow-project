@@ -12,6 +12,136 @@ import { listAnimations, type Animation as LibAnim } from "@/lib/api";
 
 const TARGET_HEIGHT = 2.0;
 
+// Hardcoded Mixamo → Rigify DEF map. Used as a fallback when the rig's
+// bone_mapping field is empty (which happens for older rigs created before
+// bone_mapping was reliably persisted, or when the Blender subprocess
+// crashed before writing the bone-data JSON). Mirrors the RIGIFY_TO_MIXAMO
+// dict in backend/scripts/blender_autorig.py — keep these in sync.
+const FALLBACK_MIXAMO_TO_DEF: Record<string, string> = {
+  Hips: "DEF-spine",
+  Spine: "DEF-spine.001",
+  Spine1: "DEF-spine.002",
+  Spine2: "DEF-spine.003",
+  Neck: "DEF-spine.004",
+  Head: "DEF-spine.005",
+  LeftUpLeg: "DEF-thigh.L",
+  LeftLeg: "DEF-shin.L",
+  LeftFoot: "DEF-foot.L",
+  LeftToeBase: "DEF-toe.L",
+  RightUpLeg: "DEF-thigh.R",
+  RightLeg: "DEF-shin.R",
+  RightFoot: "DEF-foot.R",
+  RightToeBase: "DEF-toe.R",
+  LeftShoulder: "DEF-shoulder.L",
+  LeftArm: "DEF-upper_arm.L",
+  LeftForeArm: "DEF-forearm.L",
+  LeftHand: "DEF-hand.L",
+  RightShoulder: "DEF-shoulder.R",
+  RightArm: "DEF-upper_arm.R",
+  RightForeArm: "DEF-forearm.R",
+  RightHand: "DEF-hand.R",
+  // Mixamo finger naming → Rigify DEF finger naming
+  ...Object.fromEntries(
+    (["Left", "Right"] as const).flatMap((s) => {
+      const side = s === "Left" ? "L" : "R";
+      const fingerMap: Record<string, string> = {
+        Thumb: "thumb",
+        Index: "f_index",
+        Middle: "f_middle",
+        Ring: "f_ring",
+        Pinky: "f_pinky",
+      };
+      return Object.entries(fingerMap).flatMap(([mixamo, def]) =>
+        [1, 2, 3].map((n) => [
+          `${s}Hand${mixamo}${n}`,
+          `DEF-${def}.0${n}.${side}`,
+        ] as [string, string]),
+      );
+    }),
+  ),
+};
+
+// Heuristic name-matcher for clips whose bone names follow none of the
+// known conventions. Handles patterns like:
+//   R_Clavicle_Bn  → DEF-shoulder.R
+//   L_Arm_01_Bn    → DEF-upper_arm.L  (01/02/03 = upper/fore/hand)
+//   R_Leg_02_Bn    → DEF-shin.R       (01/02/03 = thigh/shin/foot)
+//   Neck_Bn        → DEF-spine.004
+//   spine_03       → DEF-spine.003
+// Returns null when nothing plausible matches (e.g. effect/IK-target bones).
+function heuristicMapping(rawName: string): string | null {
+  const stripped = rawName
+    .replace(/^.*[:|]/, "")                        // strip Mixamo/Blender ns prefix
+    .replace(/^mixamorig\d*/i, "")                  // strip no-separator Mixamo prefix
+    .replace(/_(?:bn|bone|jnt|joint|ctrl|grp)$/i, "")  // strip common suffixes
+    .toLowerCase();
+
+  let side: "L" | "R" | "" = "";
+  let core = stripped;
+  // Side detection: prefix or suffix
+  let m = core.match(/^(l|left|r|right)[_.-]/);
+  if (m) {
+    side = m[1].startsWith("l") ? "L" : "R";
+    core = core.slice(m[0].length);
+  } else {
+    m = core.match(/[_.-](l|left|r|right)$/);
+    if (m) {
+      side = m[1].startsWith("l") ? "L" : "R";
+      core = core.slice(0, -m[0].length);
+    }
+  }
+
+  // Skip control / effect bones we explicitly don't want to drive.
+  if (/ik[_.]?target|effect|lightning|glow|mask|prop|cape|cloth/i.test(core)) {
+    return null;
+  }
+
+  // Numbered limb segments: arm_01/02/03 or leg_01/02/03
+  const limbNum = core.match(/(arm|leg)[_.-]?0?(\d+)$/);
+  if (limbNum && side) {
+    const part = limbNum[1];
+    const idx = parseInt(limbNum[2], 10);
+    if (part === "arm") {
+      if (idx === 1) return `DEF-upper_arm.${side}`;
+      if (idx === 2) return `DEF-forearm.${side}`;
+      if (idx === 3) return `DEF-hand.${side}`;
+    }
+    if (part === "leg") {
+      if (idx === 1) return `DEF-thigh.${side}`;
+      if (idx === 2) return `DEF-shin.${side}`;
+      if (idx === 3) return `DEF-foot.${side}`;
+    }
+  }
+
+  // Numbered spine segments: spine_01/02/03
+  const spineNum = core.match(/^spine[_.-]?0?(\d+)$/);
+  if (spineNum) {
+    const idx = parseInt(spineNum[1], 10);
+    if (idx >= 1 && idx <= 5) return `DEF-spine.00${idx}`;
+  }
+
+  // Plain torso keywords
+  if (/^(hips?|pelvis|root)$/.test(core)) return "DEF-spine";
+  if (/^spine$/.test(core)) return "DEF-spine.001";
+  if (/^(chest|spine1|upper_?body)$/.test(core)) return "DEF-spine.002";
+  if (/^(upper_?chest|spine2)$/.test(core)) return "DEF-spine.003";
+  if (/^neck/.test(core)) return "DEF-spine.004";
+  if (/^head/.test(core)) return "DEF-spine.005";
+
+  // Side-specific limbs (no number)
+  if (!side) return null;
+  if (/^(clavicle|shoulder)/.test(core))           return `DEF-shoulder.${side}`;
+  if (/^(upper_?arm|arm)$/.test(core))             return `DEF-upper_arm.${side}`;
+  if (/^(forearm|lower_?arm|elbow)$/.test(core))   return `DEF-forearm.${side}`;
+  if (/^(hand|wrist|palm)$/.test(core))            return `DEF-hand.${side}`;
+  if (/^(thigh|upper_?leg|upleg|hip_joint)$/.test(core)) return `DEF-thigh.${side}`;
+  if (/^(shin|lower_?leg|calf|knee)$/.test(core))  return `DEF-shin.${side}`;
+  if (/^(foot|ankle)/.test(core))                  return `DEF-foot.${side}`;
+  if (/^(toe|ball)/.test(core))                    return `DEF-toe.${side}`;
+
+  return null;
+}
+
 interface Props {
   rigGlbUrl: string;
   /** Mixamo → DEF bone-name map. Comes from the rig's `bone_mapping` field. */
@@ -19,64 +149,224 @@ interface Props {
   height?: number;
 }
 
+// GLTFLoader runs every loaded node name through
+// THREE.PropertyBinding.sanitizeNodeName, which strips reserved characters
+// (`.`, `:`, `/`, `[`, `]`) and replaces whitespace with underscores. So a
+// Blender bone like "DEF-spine.001" becomes "DEF-spine001" in the loaded
+// rig, "DEF-shoulder.L" becomes "DEF-shoulderL", "DEF-thumb.01.L" becomes
+// "DEF-thumb01L". Track names need the same treatment — otherwise
+// PropertyBinding.parseTrackName reads the dot inside the bone name as a
+// sub-object accessor and the track silently fails to bind. (This was
+// the cause of "2/53 tracks bound" — only DEF-spine, the one bone with
+// no inner dot, survived round-trip unchanged.)
+function sanitizeBoneName(name: string): string {
+  return name.replace(/\s/g, "_").replace(/[[\].:/]/g, "");
+}
+
 // ── Clip remapping ──────────────────────────────────────────────────────────
 // Animation files arrive with bone names from the source rig (Mixamo uses
-// "mixamorig:Hips"; Blender's FBX export uses "Armature|Hips"; some custom
-// exports use plain "Hips"). Our rig uses DEF-spine, DEF-upper_arm.L, etc.
-// Re-point each track from the source bone to the corresponding DEF bone.
+// "mixamorig:Hips"; Blender's FBX export uses "Armature|Hips"; native rigs
+// already use "DEF-spine"). Our rig has DEF bones. We rename tracks to the
+// matching DEF bone where the bone_mapping covers it, and KEEP unrenamed
+// tracks as-is — three.js will silently skip ones that don't bind, and any
+// track whose name already matches a rig bone (native exports) plays directly.
 function remapClipToRig(
   clip: THREE.AnimationClip,
   mixamoToDef: Record<string, string>,
-): THREE.AnimationClip {
+): { clip: THREE.AnimationClip; remapped: number; kept: number; dropped: number } {
   const tracks: THREE.KeyframeTrack[] = [];
-  let matched = 0;
+  let remapped = 0;
+  let kept = 0;
+  let dropped = 0;
   for (const track of clip.tracks) {
     const dot = track.name.lastIndexOf(".");
-    if (dot < 0) { tracks.push(track); continue; }
+    if (dot < 0) { tracks.push(track); kept++; continue; }
     const bone = track.name.slice(0, dot);
     const prop = track.name.slice(dot + 1);
+    // Drop position/scale tracks. Mixamo emits Hips.position in scene
+    // units (often cm), and applying them to a meter-scale rig
+    // teleports the root bone hundreds of meters per frame — the mesh
+    // shears across the scene as some verts follow and others don't.
+    // Rotation tracks are scale-invariant and capture every limb's
+    // motion correctly; the character animates in place, which is the
+    // right behavior for a preview viewer anyway.
+    if (prop !== "quaternion") {
+      dropped++;
+      continue;
+    }
     // Strip common source namespaces: "mixamorig:Hips" | "Armature|Hips" → "Hips"
-    const clean = bone.replace(/^.*[:|]/, "");
-    const mapped = mixamoToDef[clean] ?? mixamoToDef[bone];
-    if (!mapped) continue;
-    const nt = track.clone();
-    nt.name = `${mapped}.${prop}`;
-    tracks.push(nt);
-    matched++;
+    // Strip both the colon-style prefix ("mixamorig:Hips") AND the
+    // no-separator variant ("mixamorigHips") that some FBX→glTF converters
+    // produce when colons aren't allowed in node names. Same for
+    // "Armature|Hips".
+    const clean = bone
+      .replace(/^.*[:|]/, "")
+      .replace(/^mixamorig\d*/i, "");
+    const mapped =
+      mixamoToDef[clean] ??
+      mixamoToDef[bone] ??
+      FALLBACK_MIXAMO_TO_DEF[clean] ??
+      FALLBACK_MIXAMO_TO_DEF[bone] ??
+      heuristicMapping(bone);
+    if (mapped) {
+      const nt = track.clone();
+      nt.name = `${sanitizeBoneName(mapped)}.${prop}`;
+      tracks.push(nt);
+      remapped++;
+    } else {
+      // Sanitize the source name too in case it had reserved chars.
+      const nt = track.clone();
+      nt.name = `${sanitizeBoneName(bone)}.${prop}`;
+      tracks.push(nt);
+      kept++;
+    }
   }
-  const out = new THREE.AnimationClip(clip.name, clip.duration, tracks);
-  // @ts-expect-error — attaching diagnostic count for the UI.
-  out.__matched = matched;
-  return out;
+  return {
+    clip: new THREE.AnimationClip(clip.name, clip.duration, tracks),
+    remapped,
+    kept,
+    dropped,
+  };
 }
 
-async function loadClip(url: string): Promise<THREE.AnimationClip | null> {
-  const ext = url.split("?")[0].split(".").pop()?.toLowerCase();
+interface AnimSource {
+  root: THREE.Object3D;
+  clip: THREE.AnimationClip | null;
+}
+
+async function loadAnimSource(
+  url: string,
+  extHint?: string,
+): Promise<AnimSource> {
+  const ext =
+    extHint?.toLowerCase() ??
+    url.split("?")[0].split(".").pop()?.toLowerCase();
   if (ext === "fbx") {
     const fbx = await new FBXLoader().loadAsync(url);
-    return fbx.animations?.[0] ?? null;
+    return { root: fbx, clip: fbx.animations?.[0] ?? null };
   }
   const gltf = await new GLTFLoader().loadAsync(url);
-  return gltf.animations?.[0] ?? null;
+  return { root: gltf.scene, clip: gltf.animations?.[0] ?? null };
 }
 
-// ── Stage: loads the rig, fits it, runs the mixer ───────────────────────────
+function findSkinnedMesh(obj: THREE.Object3D): THREE.SkinnedMesh | null {
+  let result: THREE.SkinnedMesh | null = null;
+  obj.traverse((c) => {
+    if (!result && (c as THREE.SkinnedMesh).isSkinnedMesh) {
+      result = c as THREE.SkinnedMesh;
+    }
+  });
+  return result;
+}
+
+function resolveTargetBone(
+  srcBoneName: string,
+  mixamoToDef: Record<string, string>,
+): string | null {
+  const clean = srcBoneName
+    .replace(/^.*[:|]/, "")
+    .replace(/^mixamorig\d*/i, "");
+  return (
+    mixamoToDef[clean] ??
+    mixamoToDef[srcBoneName] ??
+    FALLBACK_MIXAMO_TO_DEF[clean] ??
+    FALLBACK_MIXAMO_TO_DEF[srcBoneName] ??
+    heuristicMapping(srcBoneName)
+  );
+}
+
+function buildSourceToTargetNames(
+  sourceMesh: THREE.SkinnedMesh,
+  mixamoToDef: Record<string, string>,
+): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const bone of sourceMesh.skeleton.bones) {
+    const t = resolveTargetBone(bone.name, mixamoToDef);
+    if (t) map[bone.name] = sanitizeBoneName(t);
+  }
+  return map;
+}
+
+// ── Stage: takes a pre-loaded rig + clip and runs the mixer ─────────────────
 function Stage({
-  rigGlbUrl,
+  rig,
   clip,
-}: { rigGlbUrl: string; clip: THREE.AnimationClip | null }) {
-  const [rig, setRig] = useState<THREE.Object3D | null>(null);
+  onBoundReport,
+}: {
+  rig: THREE.Object3D | null;
+  clip: THREE.AnimationClip | null;
+  onBoundReport?: (bound: number, total: number, missing: string[]) => void;
+}) {
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
 
   useEffect(() => {
+    mixerRef.current?.stopAllAction();
+    mixerRef.current = null;
+    if (!rig || !clip) return;
+    const mixer = new THREE.AnimationMixer(rig);
+    const action = mixer.clipAction(clip);
+    action.play();
+    mixerRef.current = mixer;
     let cancelled = false;
-    // Fresh loader (bypasses drei's useGLTF cache) + SkeletonUtils.clone so
-    // the AnimationMixer has its own bone copy — no interference with the
-    // preview rig used elsewhere on the page.
+
+    // Inspect what actually bound. PropertyBinding skips silently when the
+    // target node doesn't exist in the rig — which is the #1 reason
+    // animations "don't play". Log it AND surface to the UI.
+    const frame = requestAnimationFrame(() => {
+      if (cancelled) return;
+      const bindings = (action as unknown as {
+        _propertyBindings: Array<{ binding: { node: THREE.Object3D | null } }>;
+      })._propertyBindings ?? [];
+      const bound: string[] = [];
+      const missing: string[] = [];
+      bindings.forEach((b, i) => {
+        const t = clip.tracks[i];
+        if (b?.binding?.node) bound.push(t.name);
+        else missing.push(t.name);
+      });
+      console.log(
+        `[AnimationPlayer] ${bound.length}/${clip.tracks.length} tracks bound to rig.`,
+      );
+      if (missing.length) {
+        console.warn(
+          `[AnimationPlayer] ${missing.length} unbound tracks:`,
+          missing,
+        );
+      }
+      onBoundReport?.(bound.length, clip.tracks.length, missing);
+    });
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      mixer.stopAllAction();
+    };
+  }, [rig, clip, onBoundReport]);
+
+  useFrame((_, dt) => mixerRef.current?.update(dt));
+
+  return rig ? <primitive object={rig} /> : null;
+}
+
+// ── Public component ────────────────────────────────────────────────────────
+export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props) {
+  const [rig, setRig]               = useState<THREE.Object3D | null>(null);
+  const [library, setLibrary]       = useState<LibAnim[]>([]);
+  const [libraryError, setLibErr]   = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string>("");
+  const [clip, setClip]             = useState<THREE.AnimationClip | null>(null);
+  const [loadingMsg, setLoadingMsg] = useState<string>("");
+  const [statusMsg, setStatusMsg]   = useState<string>("");
+  const [error, setError]           = useState<string | null>(null);
+  const playRequestRef              = useRef(0);
+
+  // Load + auto-fit rig once. Lifted out of <Stage> so playFromUrl has
+  // access to the target SkinnedMesh for SkeletonUtils.retargetClip.
+  useEffect(() => {
+    let cancelled = false;
     new GLTFLoader().loadAsync(rigGlbUrl).then((gltf) => {
       if (cancelled) return;
       const obj = SkeletonUtils.clone(gltf.scene);
-      // Auto-fit to 2 units tall, XZ-centred, feet at Y=0.
       const box = new THREE.Box3().setFromObject(obj);
       const size = new THREE.Vector3();
       box.getSize(size);
@@ -89,35 +379,20 @@ function Stage({
       obj.position.x -= c.x;
       obj.position.z -= c.z;
       obj.position.y -= box2.min.y;
+      obj.updateMatrixWorld(true);
+
+      const boneNames: string[] = [];
+      obj.traverse((n) => {
+        if ((n as THREE.Bone).isBone) boneNames.push(n.name);
+      });
+      console.log(
+        `[AnimationPlayer] Rig loaded with ${boneNames.length} bones:`,
+        boneNames,
+      );
       setRig(obj);
     });
     return () => { cancelled = true; };
   }, [rigGlbUrl]);
-
-  useEffect(() => {
-    mixerRef.current?.stopAllAction();
-    mixerRef.current = null;
-    if (!rig || !clip) return;
-    const mixer = new THREE.AnimationMixer(rig);
-    mixer.clipAction(clip).play();
-    mixerRef.current = mixer;
-    return () => { mixer.stopAllAction(); };
-  }, [rig, clip]);
-
-  useFrame((_, dt) => mixerRef.current?.update(dt));
-
-  return rig ? <primitive object={rig} /> : null;
-}
-
-// ── Public component ────────────────────────────────────────────────────────
-export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props) {
-  const [library, setLibrary]       = useState<LibAnim[]>([]);
-  const [libraryError, setLibErr]   = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string>("");
-  const [clip, setClip]             = useState<THREE.AnimationClip | null>(null);
-  const [loadingMsg, setLoadingMsg] = useState<string>("");
-  const [statusMsg, setStatusMsg]   = useState<string>("");
-  const [error, setError]           = useState<string | null>(null);
 
   useEffect(() => {
     listAnimations()
@@ -125,38 +400,129 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
       .catch(() => setLibErr("Could not load the animation library."));
   }, []);
 
-  const playFromUrl = async (url: string, label: string) => {
+  const playFromUrl = async (url: string, label: string, extHint?: string) => {
+    if (!rig) {
+      setError("Rig is still loading — try again in a moment.");
+      return;
+    }
+    const requestId = ++playRequestRef.current;
     setLoadingMsg(`Loading ${label}…`);
     setStatusMsg("");
     setError(null);
     setClip(null);
     try {
-      const raw = await loadClip(url);
-      if (!raw) {
+      const source = await loadAnimSource(url, extHint);
+      if (requestId !== playRequestRef.current) return;
+      if (!source.clip) {
         setError("No animation tracks found in the file.");
         setLoadingMsg("");
         return;
       }
-      const remapped = remapClipToRig(raw, boneMapping);
-      // @ts-expect-error — diagnostic count set above.
-      const matched: number = remapped.__matched ?? remapped.tracks.length;
-      if (remapped.tracks.length === 0) {
-        setError("No bone tracks matched this rig — animation looks incompatible.");
+      console.log(
+        `[AnimationPlayer] Clip "${source.clip.name}" loaded — ${source.clip.tracks.length} tracks, duration ${source.clip.duration.toFixed(2)}s`,
+      );
+
+      const sourceMesh = findSkinnedMesh(source.root);
+      const targetMesh = findSkinnedMesh(rig);
+
+      let finalClip: THREE.AnimationClip | null = null;
+      let usedRetarget = false;
+
+      if (sourceMesh && targetMesh) {
+        // Force matrix-world updates on both skinned meshes — retargetClip
+        // reads bone world transforms and silently produces garbage if
+        // they're stale.
+        source.root.updateMatrixWorld(true);
+        rig.updateMatrixWorld(true);
+
+        const names = buildSourceToTargetNames(sourceMesh, boneMapping);
+        console.log(
+          `[AnimationPlayer] Retargeting via SkeletonUtils with ${Object.keys(names).length} bone-name pairs`,
+        );
+
+        try {
+          // SkeletonUtils.retargetClip samples source bone WORLD rotations
+          // per frame and rederives target-LOCAL rotations that produce
+          // the same world pose. This is what corrects the bone-roll
+          // mismatch (the "bent elbows pointing sideways" bug).
+          const retargeted = SkeletonUtils.retargetClip(
+            targetMesh,
+            sourceMesh,
+            source.clip,
+            { names, fps: 30 },
+          );
+          // Drop position tracks — those still have source-rig units (cm
+          // for Mixamo) and would teleport the root. Quaternion-only.
+          const rotOnly = retargeted.tracks.filter((t) =>
+            t.name.endsWith(".quaternion"),
+          );
+          finalClip = new THREE.AnimationClip(
+            source.clip.name,
+            retargeted.duration,
+            rotOnly,
+          );
+          usedRetarget = true;
+          console.log(
+            `[AnimationPlayer] Retarget produced ${retargeted.tracks.length} tracks; kept ${rotOnly.length} rotation tracks`,
+          );
+        } catch (e) {
+          console.warn(
+            "[AnimationPlayer] retargetClip failed — falling back to direct remap:",
+            e,
+          );
+        }
+      }
+
+      if (!finalClip) {
+        // Fallback: original direct quaternion-copy path. Wrong for
+        // mismatched rolls but at least keeps tracks bound.
+        const { clip: remapped, remapped: r, kept: k, dropped: d } =
+          remapClipToRig(source.clip, boneMapping);
+        finalClip = remapped;
+        console.log(
+          `[AnimationPlayer] Manual remap fallback: ${r} remapped, ${k} kept, ${d} dropped`,
+        );
+      }
+
+      if (!finalClip.tracks.length) {
+        if (requestId !== playRequestRef.current) return;
+        setError("No playable tracks after processing.");
         setLoadingMsg("");
         return;
       }
-      setClip(remapped);
+
+      if (requestId !== playRequestRef.current) return;
+      setClip(finalClip);
       setLoadingMsg("");
-      setStatusMsg(`Playing · ${matched} bone track${matched === 1 ? "" : "s"} matched`);
+      setStatusMsg(
+        `Loaded · ${finalClip.tracks.length} rotation tracks (${
+          usedRetarget ? "retargeted" : "direct copy"
+        })`,
+      );
     } catch (e) {
+      if (requestId !== playRequestRef.current) return;
       setError(e instanceof Error ? e.message : "Failed to load animation.");
       setLoadingMsg("");
+    }
+  };
+
+  const handleBoundReport = (bound: number, total: number, missing: string[]) => {
+    if (bound === 0) {
+      setError(
+        `No tracks bound to the rig (0/${total}). Open the browser console — the bone-name list and the unbound track names are logged there. Likely cause: rig was built before bone_mapping was saved (re-rig the model) or animation uses bone names this rig doesn't have.`,
+      );
+      setStatusMsg("");
+    } else {
+      setStatusMsg(
+        `Playing · ${bound}/${total} tracks bound${missing.length ? ` (${missing.length} skipped)` : ""}`,
+      );
     }
   };
 
   const handleSelect = async (id: string) => {
     setSelectedId(id);
     if (!id) {
+      playRequestRef.current += 1;
       setClip(null); setStatusMsg(""); setError(null);
       return;
     }
@@ -171,11 +537,13 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
   const handleLocalFile = async (file: File) => {
     setSelectedId("");
     const url = URL.createObjectURL(file);
-    await playFromUrl(url, file.name);
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    await playFromUrl(url, file.name, ext);
     // Not revoking the URL — the clip may still reference blob data.
   };
 
   const stop = () => {
+    playRequestRef.current += 1;
     setClip(null);
     setSelectedId("");
     setStatusMsg("");
@@ -286,7 +654,7 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
               </Html>
             }
           >
-            <Stage rigGlbUrl={rigGlbUrl} clip={clip} />
+            <Stage rig={rig} clip={clip} onBoundReport={handleBoundReport} />
           </Suspense>
 
           <Grid
