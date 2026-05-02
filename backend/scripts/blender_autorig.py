@@ -987,6 +987,7 @@ def main():
     Path(args.bones).write_text(json.dumps(bone_map, indent=2))
 
     log(f"SUCCESS — {len(bone_map)} bones mapped")
+#testing branches
 
 
 if __name__ == "__main__":
