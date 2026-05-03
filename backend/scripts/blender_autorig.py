@@ -114,11 +114,23 @@ def import_model(path, fmt):
     fmt = fmt.lower()
     log(f"Importing {fmt}: {path}")
     if fmt == "fbx":
-        bpy.ops.import_scene.fbx(filepath=path)
+        # Force manual axis orientation that matches three.js's FBXLoader
+        # (which loads vertices raw into a Y-up scene). Without this, Blender
+        # honours the FBX file's embedded UpAxis/FrontAxis metadata, which
+        # often disagrees with three.js — the upload preview and the rig
+        # then end up in mismatched orientations and the user's rotation
+        # buttons can't reconcile them.
+        bpy.ops.import_scene.fbx(
+            filepath=path,
+            use_manual_orientation=True,
+            axis_forward="-Z",
+            axis_up="Y",
+        )
     elif fmt in ("glb", "gltf"):
+        # glTF spec mandates Y-up — both Blender and three.js agree, no override needed.
         bpy.ops.import_scene.gltf(filepath=path)
     elif fmt == "obj":
-        bpy.ops.wm.obj_import(filepath=path)
+        bpy.ops.wm.obj_import(filepath=path, forward_axis="NEGATIVE_Z", up_axis="Y")
     else:
         raise ValueError(f"Unsupported format: {fmt}")
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, Suspense } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Environment, Grid, Html } from "@react-three/drei";
 import { FBXLoader, GLTFLoader } from "three-stdlib";
@@ -13,6 +13,19 @@ import {
 } from "@/lib/modelRotation";
 
 const TARGET_HEIGHT = 2.0;
+
+// Pick a default rotation that stands an upright character upright in the
+// three.js Y-up scene. We assume the model's longest axis is its height.
+// Y-dominant: already upright (no rotation). Z-dominant: lying with head
+// along +Z (typical Blender Z-up export) → Pitch -90° about X stands it up.
+// X-dominant: too ambiguous (can't tell which X end is the head); leave
+// alone and let the user adjust manually.
+function autoOrientFromSize(size: THREE.Vector3): ModelRotation | null {
+  const yDominant = size.y >= size.x && size.y >= size.z;
+  if (yDominant) return null;
+  if (size.z > size.x) return { x: -90, y: 0, z: 0 };
+  return null;
+}
 
 interface Props {
   file: File;
@@ -44,9 +57,11 @@ function autoFit(obj: THREE.Object3D) {
 function PreviewObject({
   file,
   rotationQuaternion,
+  onLoadedSize,
 }: {
   file: File;
   rotationQuaternion: ModelRotationQuaternion;
+  onLoadedSize?: (rawSize: THREE.Vector3) => void;
 }) {
   const [obj, setObj] = useState<THREE.Object3D | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -66,13 +81,16 @@ function PreviewObject({
     promise
       .then((loaded) => {
         if (cancelled) return;
-        // No auto-orient: show the model exactly as the loader produced
-        // it. The user is responsible for using the rotation controls to
-        // stand the model up + face it forward. This keeps preview and
-        // Blender pipelines deterministically aligned — whatever the user
-        // sees here is what gets sent through.
+        // Capture the raw axis ratios BEFORE autoFit normalises scale, so
+        // the parent can pick a sensible default rotation that stands the
+        // model up. The user can still override with the rotation buttons.
+        loaded.updateMatrixWorld(true);
+        const rawBox = new THREE.Box3().setFromObject(loaded);
+        const rawSize = new THREE.Vector3();
+        rawBox.getSize(rawSize);
         autoFit(loaded);
         setObj(loaded);
+        onLoadedSize?.(rawSize);
       })
       .catch((e) => {
         if (!cancelled) setErr(String(e?.message ?? e));
@@ -82,7 +100,7 @@ function PreviewObject({
       cancelled = true;
       URL.revokeObjectURL(url);
     };
-  }, [file]);
+  }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (err) {
     return (
@@ -120,6 +138,32 @@ export function RotationPreview({
   onChangeRotation,
   height = 360,
 }: Props) {
+  // Run auto-orient at most once per file. Avoids overwriting the user's
+  // manual adjustments if the load completes after they've already clicked.
+  const autoOrientedFileRef = useRef<File | null>(null);
+  // Latest rotation in a ref so the load callback's closure isn't stale.
+  const rotationRef = useRef<ModelRotation>(rotation);
+  useEffect(() => {
+    rotationRef.current = rotation;
+  }, [rotation]);
+
+  const handleLoadedSize = useCallback(
+    (rawSize: THREE.Vector3) => {
+      if (autoOrientedFileRef.current === file) return;
+      autoOrientedFileRef.current = file;
+      const r = rotationRef.current;
+      // Don't override a rotation the user has already started touching.
+      if (r.x !== 0 || r.y !== 0 || r.z !== 0) return;
+      const initial = autoOrientFromSize(rawSize);
+      if (!initial) return;
+      const initialQuat = buildAxisQuaternion("x", initial.x)
+        .multiply(buildAxisQuaternion("y", initial.y))
+        .multiply(buildAxisQuaternion("z", initial.z));
+      onChangeRotation(initial, quaternionToPojo(initialQuat));
+    },
+    [file, onChangeRotation],
+  );
+
   const wrapSigned = (deg: number) => {
     const wrapped = ((deg + 180) % 360 + 360) % 360 - 180;
     return wrapped === -180 ? 180 : wrapped;
@@ -195,6 +239,7 @@ export function RotationPreview({
               key={`${file.name}:${file.size}:${file.lastModified}`}
               file={file}
               rotationQuaternion={rotationQuaternion}
+              onLoadedSize={handleLoadedSize}
             />
           </Suspense>
           <Grid
@@ -220,9 +265,10 @@ export function RotationPreview({
           marginBottom: "0.6rem",
         }}
       >
-        Adjust the three axes until the model is upright (head pointing up)
-        and its front faces the camera. The rig will be built in this exact
-        orientation — no automatic rotation is applied on top.
+        We pick a best-guess starting orientation. Adjust the three axes
+        until the model is upright (head up) and its front faces the camera.
+        The rig is built in exactly this orientation — no further correction
+        is applied.
       </div>
 
       <div style={{ display: "grid", gap: ".75rem" }}>

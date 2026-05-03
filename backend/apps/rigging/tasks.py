@@ -53,11 +53,14 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
 
             push_ws(user_id, {"rig_id": rig_id, "step": "Auto-rigging with Blender...", "pct": 20})
 
-            blender_path   = settings.BLENDER_EXECUTABLE
-            blender_ran_ok = False
+            blender_path = settings.BLENDER_EXECUTABLE
+            failure_reason: str | None = None
 
             if not Path(blender_path).is_file():
-                logger.warning("BLENDER_EXECUTABLE '%s' not found — passthrough.", blender_path)
+                failure_reason = (
+                    f"Blender executable not found at '{blender_path}'. "
+                    "Set the BLENDER_PATH environment variable so Django can find it."
+                )
             else:
                 try:
                     cmd = [
@@ -74,12 +77,11 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                         cmd.extend(extra_args)
 
                     logger.info("Running Blender: %s", " ".join(cmd))
-                    # Force UTF-8 + replace on undecodable bytes. Blender
-                    # emits UTF-8, but on Windows subprocess defaults to
-                    # cp1252 and the reader thread crashes on any non-ASCII
-                    # byte (e.g. Rigify's "×" in log lines). That crash
-                    # silently truncates captured output and the pipeline
-                    # falls into its passthrough branch with no new GLB.
+                    # UTF-8 + replace on undecodable bytes. Blender emits
+                    # UTF-8, but on Windows subprocess defaults to cp1252
+                    # and the reader thread crashes on any non-ASCII byte
+                    # (e.g. Rigify's "×" in log lines), silently truncating
+                    # captured stdout.
                     result = subprocess.run(
                         cmd, capture_output=True, text=True,
                         encoding="utf-8", errors="replace",
@@ -87,23 +89,41 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                     )
                     rig.rig_log = (result.stdout or "")[-8000:]
 
-                    if result.returncode == 0 and glb_output.exists():
-                        blender_ran_ok = True
-                    else:
-                        logger.warning("Blender exit %s", result.returncode)
+                    if result.returncode != 0:
                         rig.rig_log += f"\nSTDERR: {(result.stderr or '')[-2000:]}"
+                        failure_reason = (
+                            f"Blender exited with code {result.returncode}. "
+                            "See rig log for Rigify / pipeline errors."
+                        )
+                    elif not glb_output.exists():
+                        failure_reason = "Blender finished cleanly but produced no GLB output."
 
+                except subprocess.TimeoutExpired:
+                    failure_reason = "Blender timed out after 10 minutes."
                 except Exception as e:
-                    logger.warning("Blender failed (%s) — passthrough.", e)
+                    failure_reason = f"Blender subprocess raised: {e}"
+                    logger.warning("Blender failed (%s)", e)
 
-            output_path = glb_output if blender_ran_ok else input_path
-            output_ext  = "glb"      if blender_ran_ok else rig.original_format
+            if failure_reason:
+                rig.status = RiggedModel.STATUS_FAILED
+                rig.error_message = failure_reason
+                rig.processing_time_s = time.time() - start_time
+                rig.save(update_fields=[
+                    "status", "error_message", "rig_log", "processing_time_s",
+                ])
+                push_ws(user_id, {
+                    "rig_id": rig_id,
+                    "status": "failed",
+                    "error": failure_reason,
+                })
+                logger.error("Rig failed %s: %s", rig_id, failure_reason)
+                return {"status": "failed", "rig_id": rig_id}
 
             push_ws(user_id, {"rig_id": rig_id, "step": "Saving rigged model...", "pct": 80})
 
-            with open(output_path, "rb") as f:
+            with open(glb_output, "rb") as f:
                 rig.rigged_glb.save(
-                    f"{rig.id}_rigged.{output_ext}", File(f), save=False
+                    f"{rig.id}_rigged.glb", File(f), save=False
                 )
 
             if bone_data_path.exists():

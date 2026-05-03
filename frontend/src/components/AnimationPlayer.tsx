@@ -364,9 +364,17 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
   // access to the target SkinnedMesh for SkeletonUtils.retargetClip.
   useEffect(() => {
     let cancelled = false;
-    new GLTFLoader().loadAsync(rigGlbUrl).then((gltf) => {
+    // Pre-Blender (passthrough) rigs are stored with their original
+    // extension, so the URL can be .fbx/.obj — feeding that into GLTFLoader
+    // crashes with a JSON parse error on the FBX magic header.
+    const ext = rigGlbUrl.split("?")[0].split(".").pop()?.toLowerCase();
+    const loadScene =
+      ext === "fbx" || ext === "obj"
+        ? new FBXLoader().loadAsync(rigGlbUrl)
+        : new GLTFLoader().loadAsync(rigGlbUrl).then((g) => g.scene);
+    loadScene.then((scene) => {
       if (cancelled) return;
-      const obj = SkeletonUtils.clone(gltf.scene);
+      const obj = SkeletonUtils.clone(scene);
       const box = new THREE.Box3().setFromObject(obj);
       const size = new THREE.Vector3();
       box.getSize(size);

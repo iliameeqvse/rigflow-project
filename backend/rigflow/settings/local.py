@@ -1,12 +1,19 @@
 import os
+import shutil
 from .base import *
 
 
 DEBUG = True
 
-# Steam Blender path (Windows). Override with BLENDER_PATH env var if needed.
-BLENDER_STEAM = r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"
-BLENDER_EXECUTABLE = os.environ.get("BLENDER_PATH", BLENDER_STEAM)
+# Prefer BLENDER_PATH if set; otherwise look up `blender` on PATH;
+# otherwise fall back to a tarball install at /usr/local/bin/blender.
+# This handles WSL/Linux out-of-the-box and still respects an explicit
+# override (e.g. a Windows path or a versioned tarball install).
+BLENDER_EXECUTABLE = (
+    os.environ.get("BLENDER_PATH")
+    or shutil.which("blender")
+    or "/usr/local/bin/blender"
+)
 
 
 # SQLite for local dev without Docker. Use PostgreSQL in production (Docker).
