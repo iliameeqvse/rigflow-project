@@ -45,8 +45,9 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path     = Path(tmpdir) / f"input.{rig.original_format}"
             glb_output     = Path(tmpdir) / "rigged.glb"
-            bone_data_path = Path(tmpdir) / "bones.json"
-            pose_data_path = Path(tmpdir) / "pose.json"
+            bone_data_path  = Path(tmpdir) / "bones.json"
+            pose_data_path  = Path(tmpdir) / "pose.json"
+            landmarks_path  = Path(tmpdir) / "landmarks.json"
 
             with rig.original_file.open("rb") as f:
                 input_path.write_bytes(f.read())
@@ -69,8 +70,9 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                         "--",
                         "--input",  str(input_path),
                         "--output", str(glb_output),
-                        "--bones",  str(bone_data_path),
-                        "--pose",   str(pose_data_path),
+                        "--bones",          str(bone_data_path),
+                        "--landmarks-out",  str(landmarks_path),
+                        "--pose",           str(pose_data_path),
                         "--format", rig.original_format,
                     ]
                     if extra_args:
@@ -128,6 +130,9 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
 
             if bone_data_path.exists():
                 rig.bone_mapping = json.loads(bone_data_path.read_text())
+
+            if landmarks_path.exists():
+                rig.landmarks = json.loads(landmarks_path.read_text())
 
             if pose_data_path.exists():
                 try:
