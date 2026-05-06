@@ -60,7 +60,7 @@ const LANDMARKS = [
   { key: "right_ankle"    as const, label: "Right Ankle",    color: "#ef476f", instruction: "Click the character's RIGHT ankle",          group: "Leg R" },
 ];
 
-const GROUPS = ["Head", "Arm L", "Arm R", "Torso", "Leg L", "Leg R"] as const;
+const GROUPS = ["Head", "Torso", "Arm L", "Arm R", "Leg L", "Leg R"] as const;
 type Group = typeof GROUPS[number];
 
 function defaultLandmarks(bbox: THREE.Box3): LandmarkPositions {
