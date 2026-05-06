@@ -1,12 +1,13 @@
 "use client";
 
 import React, { Suspense, useEffect, useRef, useState, useCallback } from "react";
-import { Canvas, useLoader, useFrame } from "@react-three/fiber";
+import { Canvas, useLoader, useFrame, ThreeEvent } from "@react-three/fiber";
 import {
   OrbitControls, Environment, Grid, Html, useGLTF,
 } from "@react-three/drei";
 import { FBXLoader } from "three-stdlib";
 import * as THREE from "three";
+import { type LandmarkSet, getLandmarks } from "@/lib/api";
 
 // ── Target display height matching ModelViewer ────────────────────────────────
 const TARGET_HEIGHT = 2.0;
@@ -33,38 +34,57 @@ function autoFitObject(object: THREE.Object3D) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export interface LandmarkPositions {
-  chin:        [number, number, number];
-  left_wrist:  [number, number, number];
-  right_wrist: [number, number, number];
-  groin:       [number, number, number];
-  left_ankle:  [number, number, number];
-  right_ankle: [number, number, number];
-}
+// LandmarkPositions is now the full 14-key set from the API types
+export type LandmarkPositions = LandmarkSet;
 
-const LANDMARK_META = [
-  { key: "chin"        as const, label: "Chin",        color: "#ff4444", instruction: "Click the bottom of the chin / top of neck" },
-  { key: "left_wrist"  as const, label: "Left Wrist",  color: "#ff8c00", instruction: "Click the character's LEFT wrist (your right)" },
-  { key: "right_wrist" as const, label: "Right Wrist", color: "#ffd700", instruction: "Click the character's RIGHT wrist (your left)" },
-  { key: "groin"       as const, label: "Groin",       color: "#00c48c", instruction: "Click the crotch point between the legs" },
-  { key: "left_ankle"  as const, label: "Left Ankle",  color: "#00aaff", instruction: "Click the character's LEFT ankle" },
-  { key: "right_ankle" as const, label: "Right Ankle", color: "#aa44ff", instruction: "Click the character's RIGHT ankle" },
+const LANDMARKS = [
+  // Head — yellow
+  { key: "chin"           as const, label: "Chin",           color: "#ffd166", instruction: "Click the bottom of the chin / top of neck", group: "Head"  },
+  // Torso — green
+  { key: "groin"          as const, label: "Groin",          color: "#06d6a0", instruction: "Click the crotch point between the legs",     group: "Torso" },
+  // Left arm — blue
+  { key: "left_shoulder"  as const, label: "Left Shoulder",  color: "#118ab2", instruction: "Click the character's LEFT shoulder joint",   group: "Arm L" },
+  { key: "left_elbow"     as const, label: "Left Elbow",     color: "#118ab2", instruction: "Click the character's LEFT elbow",           group: "Arm L" },
+  { key: "left_wrist"     as const, label: "Left Wrist",     color: "#118ab2", instruction: "Click the character's LEFT wrist",           group: "Arm L" },
+  // Right arm — same blue (mirror; the group label disambiguates)
+  { key: "right_shoulder" as const, label: "Right Shoulder", color: "#118ab2", instruction: "Click the character's RIGHT shoulder joint",  group: "Arm R" },
+  { key: "right_elbow"    as const, label: "Right Elbow",    color: "#118ab2", instruction: "Click the character's RIGHT elbow",          group: "Arm R" },
+  { key: "right_wrist"    as const, label: "Right Wrist",    color: "#118ab2", instruction: "Click the character's RIGHT wrist",          group: "Arm R" },
+  // Left leg — pink
+  { key: "left_hip"       as const, label: "Left Hip",       color: "#ef476f", instruction: "Click the character's LEFT hip socket",      group: "Leg L" },
+  { key: "left_knee"      as const, label: "Left Knee",      color: "#ef476f", instruction: "Click the character's LEFT knee",            group: "Leg L" },
+  { key: "left_ankle"     as const, label: "Left Ankle",     color: "#ef476f", instruction: "Click the character's LEFT ankle",           group: "Leg L" },
+  // Right leg — pink
+  { key: "right_hip"      as const, label: "Right Hip",      color: "#ef476f", instruction: "Click the character's RIGHT hip socket",     group: "Leg R" },
+  { key: "right_knee"     as const, label: "Right Knee",     color: "#ef476f", instruction: "Click the character's RIGHT knee",           group: "Leg R" },
+  { key: "right_ankle"    as const, label: "Right Ankle",    color: "#ef476f", instruction: "Click the character's RIGHT ankle",          group: "Leg R" },
 ];
+
+const GROUPS = ["Head", "Arm L", "Arm R", "Torso", "Leg L", "Leg R"] as const;
+type Group = typeof GROUPS[number];
 
 function defaultLandmarks(bbox: THREE.Box3): LandmarkPositions {
   const size = new THREE.Vector3();
   bbox.getSize(size);
-  const cx  = (bbox.min.x + bbox.max.x) / 2;
-  const cy  = (bbox.min.y + bbox.max.y) / 2;
-  const h   = size.z;
-  const w   = size.x;
+  const cx = (bbox.min.x + bbox.max.x) / 2;
+  const cy = (bbox.min.y + bbox.max.y) / 2;
+  const h  = size.z;
+  const w  = size.x;
   return {
-    chin:        [cx,          cy, bbox.min.z + h * 0.86],
-    left_wrist:  [cx - w * 0.52, cy, bbox.min.z + h * 0.44],
-    right_wrist: [cx + w * 0.52, cy, bbox.min.z + h * 0.44],
-    groin:       [cx,          cy, bbox.min.z + h * 0.51],
-    left_ankle:  [cx - w * 0.14, cy, bbox.min.z + h * 0.04],
-    right_ankle: [cx + w * 0.14, cy, bbox.min.z + h * 0.04],
+    chin:           [cx,             cy, bbox.min.z + h * 0.86],
+    groin:          [cx,             cy, bbox.min.z + h * 0.51],
+    left_shoulder:  [cx - w * 0.18,  cy, bbox.min.z + h * 0.78],
+    right_shoulder: [cx + w * 0.18,  cy, bbox.min.z + h * 0.78],
+    left_elbow:     [cx - w * 0.36,  cy, bbox.min.z + h * 0.60],
+    right_elbow:    [cx + w * 0.36,  cy, bbox.min.z + h * 0.60],
+    left_wrist:     [cx - w * 0.52,  cy, bbox.min.z + h * 0.44],
+    right_wrist:    [cx + w * 0.52,  cy, bbox.min.z + h * 0.44],
+    left_hip:       [cx - w * 0.10,  cy, bbox.min.z + h * 0.51],
+    right_hip:      [cx + w * 0.10,  cy, bbox.min.z + h * 0.51],
+    left_knee:      [cx - w * 0.10,  cy, bbox.min.z + h * 0.27],
+    right_knee:     [cx + w * 0.10,  cy, bbox.min.z + h * 0.27],
+    left_ankle:     [cx - w * 0.14,  cy, bbox.min.z + h * 0.04],
+    right_ankle:    [cx + w * 0.14,  cy, bbox.min.z + h * 0.04],
   };
 }
 
@@ -148,7 +168,7 @@ function ClickableModel({
   return (
     <primitive
       object={object}
-      onClick={(e: any) => {
+      onClick={(e: ThreeEvent<MouseEvent>) => {
         e.stopPropagation();
         if (e.point) onMeshClick(e.point.clone());
       }}
@@ -171,20 +191,40 @@ function GLBClickable(props: { url: string; onMeshClick: (pt: THREE.Vector3) => 
 // ─────────────────────────────────────────────────────────────────────────────
 interface LandmarkEditorProps {
   glbUrl: string;
+  rigId?: string;
   onSubmit: (landmarks: LandmarkPositions) => void;
   submitting?: boolean;
 }
 
-export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: LandmarkEditorProps) {
+export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: LandmarkEditorProps) {
   const [landmarks, setLandmarks]     = useState<LandmarkPositions | null>(null);
   const [selectedKey, setSelectedKey] = useState<keyof LandmarkPositions | null>("chin");
   const [bbox, setBbox]               = useState<THREE.Box3 | null>(null);
 
+  // Fetch landmarks from API on open, fall back to defaultLandmarks if fetch fails.
+  // Only runs when rigId is provided; without rigId, handleBoundsReady sets defaults directly.
+  useEffect(() => {
+    if (!rigId || !bbox) return;
+    let cancelled = false;
+    getLandmarks(rigId)
+      .then(({ data }) => {
+        if (cancelled) return;
+        setLandmarks(data.landmarks);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLandmarks(defaultLandmarks(bbox));
+      });
+    return () => { cancelled = true; };
+  }, [rigId, bbox]);
+
   const handleBoundsReady = useCallback((b: THREE.Box3) => {
     setBbox(b);
-    setLandmarks(defaultLandmarks(b));
     setSelectedKey("chin");
-  }, []);
+    // If no rigId is available, set default landmarks immediately from bbox.
+    // When rigId is present, the useEffect above will set landmarks after the API call.
+    if (!rigId) setLandmarks(defaultLandmarks(b));
+  }, [rigId]);
 
   const handleMeshClick = useCallback((pt: THREE.Vector3) => {
     if (!selectedKey) return;
@@ -192,12 +232,12 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
       ? { ...prev, [selectedKey]: [pt.x, pt.y, pt.z] as [number, number, number] }
       : prev
     );
-    const keys  = LANDMARK_META.map((m) => m.key);
-    const next  = keys[keys.indexOf(selectedKey) + 1] ?? null;
+    const keys  = LANDMARKS.map((m) => m.key);
+    const next  = keys[keys.indexOf(selectedKey as typeof keys[number]) + 1] ?? null;
     setSelectedKey(next);
   }, [selectedKey]);
 
-  const currentMeta = LANDMARK_META.find((m) => m.key === selectedKey);
+  const currentMeta = LANDMARKS.find((m) => m.key === selectedKey);
   const ext = glbUrl.split("?")[0].split(".").pop()?.toLowerCase();
 
   return (
@@ -209,6 +249,7 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
         background: "#0d0d1a", border: "1px solid #2a2a3d",
         borderRadius: 12, padding: "1rem",
         display: "flex", flexDirection: "column", gap: "0.55rem",
+        maxHeight: 560, overflowY: "auto",
       }}>
         <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#888", letterSpacing: "0.08em" }}>
           LANDMARK PLACEMENT
@@ -223,30 +264,40 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
         }}>
           {currentMeta
             ? <><span style={{ color: currentMeta.color, fontWeight: 700 }}>{currentMeta.label}:</span><br />{currentMeta.instruction}</>
-            : <span style={{ color: "#00c48c" }}>✅ All placed — hit Apply!</span>
+            : <span style={{ color: "#00c48c" }}>All placed — hit Apply!</span>
           }
         </div>
 
-        {/* Landmark list */}
-        {LANDMARK_META.map(({ key, label, color }) => {
-          const placed = landmarks !== null;
-          const active = selectedKey === key;
-          return (
-            <button key={key} onClick={() => setSelectedKey(key)} style={{
-              display: "flex", alignItems: "center", gap: "0.55rem",
-              padding: "0.45rem 0.7rem", borderRadius: 7,
-              border: `1px solid ${active ? color : "#2a2a3d"}`,
-              background: active ? `${color}18` : "transparent",
-              color: "#ccc", cursor: "pointer", fontSize: "0.84rem",
-              fontWeight: active ? 700 : 400, textAlign: "left",
-              transition: "all 0.15s",
-            }}>
-              <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }} />
-              {label}
-              {placed && <span style={{ marginLeft: "auto", color: "#00c48c", fontSize: 11 }}>✓</span>}
-            </button>
-          );
-        })}
+        {/* Grouped landmark list */}
+        {GROUPS.map((group: Group) => (
+          <section key={group} style={{ marginBottom: ".75rem" }}>
+            <h4 style={{
+              color: "#888", fontSize: ".75rem", textTransform: "uppercase",
+              letterSpacing: ".05em", margin: "0 0 .35rem", fontWeight: 700,
+            }}>{group}</h4>
+            <div style={{ display: "flex", flexDirection: "column", gap: ".25rem" }}>
+              {LANDMARKS.filter((l) => l.group === group).map(({ key, label, color }) => {
+                const active = selectedKey === key;
+                const placed = landmarks !== null;
+                return (
+                  <button key={key} onClick={() => setSelectedKey(key)} style={{
+                    display: "flex", alignItems: "center", gap: "0.55rem",
+                    padding: "0.45rem 0.7rem", borderRadius: 7,
+                    border: `1px solid ${active ? color : "#2a2a3d"}`,
+                    background: active ? `${color}18` : "transparent",
+                    color: "#ccc", cursor: "pointer", fontSize: "0.84rem",
+                    fontWeight: active ? 700 : 400, textAlign: "left",
+                    transition: "all 0.15s",
+                  }}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }} />
+                    {label}
+                    {placed && <span style={{ marginLeft: "auto", color: "#00c48c", fontSize: 11 }}>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ))}
 
         <div style={{ flex: 1 }} />
 
@@ -261,7 +312,7 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
             fontSize: "0.88rem",
           }}
         >
-          {submitting ? "Applying…" : "✅ Apply rig"}
+          {submitting ? "Applying…" : "Apply rig"}
         </button>
 
         <button
@@ -272,7 +323,7 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
             color: "#666", cursor: "pointer", fontSize: "0.78rem",
           }}
         >
-          ↺ Reset to defaults
+          Reset to defaults
         </button>
       </div>
 
@@ -293,7 +344,7 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
             borderRadius: 20, padding: "4px 12px", fontSize: 11, color: currentMeta.color,
             fontWeight: 700, pointerEvents: "none", zIndex: 10, whiteSpace: "nowrap",
           }}>
-            🎯 Click on the model to place: {currentMeta.label}
+            Click on the model to place: {currentMeta.label}
           </div>
         )}
 
@@ -303,7 +354,7 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
           <pointLight position={[-5, 5, -5]} intensity={0.3} color="#6c63ff" />
           <Environment preset="studio" />
 
-          <Suspense fallback={<Html center><div style={{ color: "#6c63ff" }}>⚙️ Loading…</div></Html>}>
+          <Suspense fallback={<Html center><div style={{ color: "#6c63ff" }}>Loading…</div></Html>}>
             {ext === "fbx" || ext === "obj"
               ? <FBXClickable url={glbUrl} onMeshClick={handleMeshClick} onBoundsReady={handleBoundsReady} />
               : <GLBClickable url={glbUrl} onMeshClick={handleMeshClick} onBoundsReady={handleBoundsReady} />
@@ -311,7 +362,7 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
           </Suspense>
 
           {/* Landmark spheres */}
-          {landmarks && LANDMARK_META.map(({ key, label, color }) => (
+          {landmarks && LANDMARKS.map(({ key, label, color }) => (
             <LandmarkSphere
               key={key}
               position={landmarks[key]}
