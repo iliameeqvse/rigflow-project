@@ -1246,7 +1246,6 @@ def main():
     args = parse_args()
     log(f"Input:  {args.input}")
     log(f"Output: {args.output}")
-    log(f"Mode:   {'LANDMARK' if args.landmarks else 'AUTO'}")
 
     clear_scene()
     import_model(args.input, args.format)
@@ -1312,16 +1311,23 @@ def main():
         Path(args.landmarks_out).write_text(json.dumps(detected, indent=2))
         log(f"Wrote {len(detected)} detected landmarks → {args.landmarks_out}")
 
+    # Use the metarig's height as the canonical reference instead of
+    # recomputing the mesh AABB. scale_mesh_to_metarig already aligned
+    # the body to this; reading the live mesh AABB here picks up stray
+    # imported geometry (decorative spheres, props) that inflate the
+    # bounding box and double the landmark conversion scale, which puts
+    # the metarig bones at 2× their correct height.
+    mesh_h = armature_aabb(metarig)["size"].z
+    log(f"Landmark conversion using metarig height: {mesh_h:.3f}m")
+
     if args.landmarks:
-        # Use the metarig's height as the canonical reference instead of
-        # recomputing the mesh AABB. scale_mesh_to_metarig already aligned
-        # the body to this; reading the live mesh AABB here picks up stray
-        # imported geometry (decorative spheres, props) that inflate the
-        # bounding box and double the landmark conversion scale, which puts
-        # the metarig bones at 2× their correct height.
-        mesh_h = armature_aabb(metarig)["size"].z
-        log(f"Landmark conversion using metarig height: {mesh_h:.3f}m")
-        place_bones_from_landmarks(metarig, json.loads(args.landmarks), mesh_h)
+        user_landmarks = json.loads(args.landmarks)
+        log(f"Mode: LANDMARK (user-supplied {len(user_landmarks)} keys)")
+        place_bones_from_landmarks(metarig, user_landmarks, mesh_h)
+    else:
+        auto_landmarks = detect_landmarks(meshes, pose=detected_pose)
+        log(f"Mode: AUTO (detected {len(auto_landmarks)} landmarks)")
+        place_bones_from_landmarks(metarig, auto_landmarks, mesh_h)
 
     rig = generate_rig(metarig)
 
