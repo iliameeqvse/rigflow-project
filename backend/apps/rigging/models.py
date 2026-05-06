@@ -39,6 +39,17 @@ class RiggedModel(models.Model):
     bone_mapping    = models.JSONField(default=dict)   # Rigify→Mixamo name map
     bone_corrections = models.JSONField(default=dict)  # manual user tweaks
 
+    # Landmarks for rig fitting
+    landmarks = models.JSONField(
+        null=True, blank=True,
+        help_text=(
+            "14 anatomical landmarks (chin, groin, L/R × {shoulder, elbow, "
+            "wrist, hip, knee, ankle}) in three.js editor space, used to fit "
+            "the rigify metarig to non-human-proportion meshes. Populated by "
+            "auto-rig; editable via /landmarks/ + /rerig-landmarks/."
+        ),
+    )
+
     # Stats
     vertex_count = models.IntegerField(default=0)
     bone_count   = models.IntegerField(default=0)
