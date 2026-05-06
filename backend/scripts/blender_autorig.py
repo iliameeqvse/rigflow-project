@@ -668,26 +668,43 @@ def _vec(xyz):
 
 
 # ---------------------------------------------------------------------------
-# Landmark detection (stub — Task 5 will add T-pose hybrid detection)
+# Landmark detection (T-pose vertex-extremity hybrid — Task 5)
 # ---------------------------------------------------------------------------
 
-def detect_landmarks(meshes, pose=None):
-    """Return a 14-key landmark dict in three.js editor space (Y-up,
-    normalized to THREE_DISPLAY_HEIGHT units tall). For now this is the
-    AABB-default fallback only — Task 5 adds T-pose hybrid detection.
+def _extreme_vertex(verts, axis, sign):
+    """Return the vertex furthest along a signed axis. axis ∈ {0,1,2}."""
+    if sign > 0:
+        return max(verts, key=lambda v: v[axis])
+    return min(verts, key=lambda v: v[axis])
 
-    `pose` may be None, or a dict like {"name": "t_pose", "confidence": 0.84}.
+
+def _bottom_cluster_centroids(verts, bottom_frac=0.03):
+    """Return (left_centroid, right_centroid) of the lowest `bottom_frac`
+    of vertices, partitioned by X sign. Used for ankle detection."""
+    z_threshold = sorted(v.z for v in verts)[max(0, int(len(verts) * bottom_frac) - 1)]
+    bottom = [v for v in verts if v.z <= z_threshold]
+    left  = [v for v in bottom if v.x >= 0]
+    right = [v for v in bottom if v.x <  0]
+    if not left or not right:
+        return None  # caller falls back
+    def centroid(vs):
+        n = len(vs)
+        return Vector((sum(v.x for v in vs)/n, sum(v.y for v in vs)/n, sum(v.z for v in vs)/n))
+    return centroid(left), centroid(right)
+
+
+def detect_landmarks(meshes, pose=None):
+    """Return a 14-key landmark dict in three.js editor space.
+
+    For T-pose with confidence ≥ 0.75 use a hybrid algorithm: vertex
+    extremities for wrists/ankles, AABB defaults for everything else
+    (Task 6 adds slicing for chin/shoulders/groin/hips). Other poses
+    fall back to AABB ratios via _promote_legacy_landmarks.
     """
     b = aabb(world_vertices(meshes))
-    height_blender = b["size"].z
-    if height_blender < 1e-3:
-        height_blender = 1.0
+    height_blender = max(b["size"].z, 1e-3)
     s = THREE_DISPLAY_HEIGHT / height_blender
 
-    # Convert a Blender world coord to three.js editor space.
-    # threejs_to_blender does: (x*s, -z*s, y*s) where s=mesh_h/2.
-    # The inverse: three_x = bx/s_inv, three_y = bz/s_inv, three_z = -by/s_inv
-    # with s_inv = mesh_height_blender / THREE_DISPLAY_HEIGHT.
     def to_three(bv):
         return (bv.x * s, bv.z * s, -bv.y * s)
 
@@ -695,7 +712,12 @@ def detect_landmarks(meshes, pose=None):
     body_h = mx.z - mn.z
     width = max(mx.x - mn.x, 1e-3)
 
-    # AABB-derived defaults, mirroring the legacy heuristic ratios.
+    is_t = (pose is not None
+            and pose.get("name") == "t_pose"
+            and pose.get("confidence", 0.0) >= 0.75)
+
+    # AABB defaults (used as fallbacks even on the T-pose path for the
+    # landmarks slicing hasn't been wired up for yet).
     chin   = Vector((0.0, 0.0, mn.z + 0.92 * body_h))
     groin  = Vector((0.0, 0.0, mn.z + 0.50 * body_h))
     lw     = Vector((mx.x, 0.0, mn.z + 0.82 * body_h))
@@ -703,11 +725,25 @@ def detect_landmarks(meshes, pose=None):
     la     = Vector((+0.10 * width, 0.0, mn.z))
     ra     = Vector((-0.10 * width, 0.0, mn.z))
 
+    if is_t:
+        verts = world_vertices(meshes)
+        # Wrists: extreme +X / -X.
+        lw_v = _extreme_vertex(verts, axis=0, sign=+1)
+        rw_v = _extreme_vertex(verts, axis=0, sign=-1)
+        lw = Vector((lw_v.x, lw_v.y, lw_v.z))
+        rw = Vector((rw_v.x, rw_v.y, rw_v.z))
+        # Ankles: bottom-cluster centroids split by X sign.
+        ankles = _bottom_cluster_centroids(verts)
+        if ankles is not None:
+            la, ra = ankles
+        log(f"T-pose detection: wrists & ankles via vertex extremities")
+    else:
+        log("Non-T pose or low confidence — landmark detection falls back to AABB defaults")
+
     six = {"chin": chin, "groin": groin,
            "left_wrist": lw, "right_wrist": rw,
            "left_ankle": la, "right_ankle": ra}
     fourteen_blender = _promote_legacy_landmarks(six)
-
     return {k: to_three(v) for k, v in fourteen_blender.items()}
 
 
@@ -1116,11 +1152,6 @@ def main():
         ) else None,
     )
 
-    if args.landmarks_out:
-        detected = detect_landmarks(meshes, pose=None)  # pose param wired in Task 5
-        Path(args.landmarks_out).write_text(json.dumps(detected, indent=2))
-        log(f"Wrote {len(detected)} detected landmarks → {args.landmarks_out}")
-
     metarig = create_metarig()
     remove_face_bones(metarig)
 
@@ -1142,6 +1173,19 @@ def main():
             Path(args.pose).write_text(json.dumps(pose_info, indent=2))
         except Exception as e:
             log(f"  Failed to write pose JSON: {e}")
+
+    # Build a pose dict in the shape detect_landmarks expects:
+    # {"name": <classification>, "confidence": <float 0-1>}.
+    # detect_pose returns confidence already on [0, 1].
+    detected_pose = {
+        "name": pose_info["classification"],
+        "confidence": pose_info["confidence"],
+    }
+
+    if args.landmarks_out:
+        detected = detect_landmarks(meshes, pose=detected_pose)
+        Path(args.landmarks_out).write_text(json.dumps(detected, indent=2))
+        log(f"Wrote {len(detected)} detected landmarks → {args.landmarks_out}")
 
     if args.landmarks:
         # Use the metarig's height as the canonical reference instead of
