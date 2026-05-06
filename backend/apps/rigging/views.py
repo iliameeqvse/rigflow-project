@@ -22,16 +22,37 @@ from apps.throttles import (
 
 User = get_user_model()
 
+# Match the frontend's hard-coded 100 MB cap (frontend/src/app/upload/page.tsx).
+# The check happens before RiggedModel.objects.create() so an oversized upload
+# doesn't leave a half-written file in MEDIA_ROOT.
+MAX_RIG_UPLOAD_MB = 100
+MAX_RIG_UPLOAD_BYTES = MAX_RIG_UPLOAD_MB * 1024 * 1024
+
 
 def _get_or_create_demo_profile():
+    """Shared anonymous-only demo profile. Used only when the request
+    is genuinely unauthenticated; the throttle layer rejects anonymous
+    *uploads* before we get here, but anonymous detail/status reads can
+    still hit code paths that need a profile."""
+    from apps.users.models import UserProfile
     user, _ = User.objects.get_or_create(
         email="demo@rigflow.local",
         defaults={"username": "demo"},
     )
-    if not hasattr(user, "profile"):
-        from apps.users.models import UserProfile
-        UserProfile.objects.create(user=user, plan=UserProfile.PLAN_FREE)
-    return user.profile
+    profile, _ = UserProfile.objects.get_or_create(
+        user=user, defaults={"plan": UserProfile.PLAN_FREE},
+    )
+    return profile
+
+
+def _profile_for(user):
+    """Authenticated users always upload to *their own* profile, never the
+    demo one. The post_save signal creates a profile on user creation, but
+    we get_or_create here too so legacy users (created before the signal
+    was wired) don't fall through to demo."""
+    from apps.users.models import UserProfile
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    return profile
 
 
 def _glb_url(request, rig) -> str | None:
@@ -54,7 +75,7 @@ class RiggedModelViewSet(ModelViewSet):
         # Status polling AND detail read are public so the editor page can
         # surface bone_mapping / rig_log without 404'ing on rigs that were
         # created via the anonymous demo-profile fallback in `create()`.
-        if self.action in ("status_action", "retrieve"):
+        if self.action in ("status_action", "retrieve", "landmarks"):
             return [AllowAny()]
         return [IsAuthenticated()]
 
@@ -69,7 +90,7 @@ class RiggedModelViewSet(ModelViewSet):
         # initialize_request *after* this runs), so we resolve via action_map.
         method = self.request.method.lower() if getattr(self, "request", None) else None
         action = (getattr(self, "action_map", None) or {}).get(method)
-        if action in ("status_action", "retrieve"):
+        if action in ("status_action", "retrieve", "landmarks"):
             return []
         return super().get_authenticators()
 
@@ -93,10 +114,10 @@ class RiggedModelViewSet(ModelViewSet):
         qs = super().get_queryset()
         # Public actions skip the per-user filter so demo-profile rigs and
         # rigs uploaded under a different auth state remain readable.
-        if self.action in ("status_action", "retrieve"):
+        if self.action in ("status_action", "retrieve", "landmarks"):
             return qs
-        if self.request.user.is_authenticated and hasattr(self.request.user, "profile"):
-            return qs.filter(user=self.request.user.profile)
+        if self.request.user.is_authenticated:
+            return qs.filter(user=_profile_for(self.request.user))
         return qs.none()
 
     @extend_schema(
@@ -123,6 +144,12 @@ class RiggedModelViewSet(ModelViewSet):
         ext = (file.name or "").split(".")[-1].lower()
         if ext not in {"fbx", "glb", "gltf", "obj"}:
             return Response({"error": f"Unsupported format: .{ext}."}, status=status.HTTP_400_BAD_REQUEST)
+        if file.size and file.size > MAX_RIG_UPLOAD_BYTES:
+            mb = file.size / (1024 * 1024)
+            return Response(
+                {"error": f"File too large ({mb:.1f} MB). Maximum is {MAX_RIG_UPLOAD_MB} MB."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Manual preview-space Euler rotation in degrees. Form fields arrive
         # as strings; tolerate junk (default 0).
@@ -140,8 +167,8 @@ class RiggedModelViewSet(ModelViewSet):
         rotation_qz = parse_rotation("rotation_qz")
         rotation_qw = parse_rotation("rotation_qw")
 
-        if self.request.user.is_authenticated and hasattr(self.request.user, "profile"):
-            profile = self.request.user.profile
+        if self.request.user.is_authenticated:
+            profile = _profile_for(self.request.user)
         else:
             profile = _get_or_create_demo_profile()
 
@@ -223,6 +250,24 @@ class RiggedModelViewSet(ModelViewSet):
 
         auto_rig_model.delay(str(rig.id))
         return Response(self.get_serializer(rig, context={"request": request}).data)
+
+    @extend_schema(
+        summary="Get the 14 detected landmarks for the rig editor",
+        description=(
+            "Returns 14 anatomical landmarks (chin, groin, L/R × shoulder, "
+            "elbow, wrist, hip, knee, ankle) in three.js editor space. "
+            "Populated when the rig was generated; if the rig predates the "
+            "feature, returns AABB-default landmarks instead of 404."
+        ),
+    )
+    @action(detail=True, methods=["get"], url_path="landmarks",
+            permission_classes=[AllowAny], authentication_classes=[])
+    def landmarks(self, request, id=None):
+        rig = self.get_object()
+        if rig.landmarks:
+            return Response({"landmarks": rig.landmarks})
+        from .legacy_landmarks import default_landmarks_for_rig
+        return Response({"landmarks": default_landmarks_for_rig(rig)})
 
     @extend_schema(
         summary="Re-rig using landmark positions",
