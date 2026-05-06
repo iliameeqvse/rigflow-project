@@ -675,15 +675,27 @@ def threejs_to_blender(pt, mesh_height):
 
 
 def place_bones_from_landmarks(metarig, landmarks, mesh_height):
-    log(f"Applying {len(landmarks)} landmarks (mesh_h={mesh_height:.3f}):")
+    """Position rigify metarig bones from a 14-key landmark dict (or a
+    legacy 6-key dict that gets promoted via _promote_legacy_landmarks).
+
+    Three.js-space inputs are converted to Blender world coords first.
+    All 14 keys must be present after promotion; KeyError otherwise."""
+    log(f"Applying landmarks (mesh_h={mesh_height:.3f}):")
     for k, v in landmarks.items():
         log(f"  three.js {k}: ({v[0]:.3f}, {v[1]:.3f}, {v[2]:.3f})")
+
     lmk = {k: threejs_to_blender(v, mesh_height) for k, v in landmarks.items()}
+    lmk = _promote_legacy_landmarks(lmk)
     for k, v in lmk.items():
         log(f"  blender   {k}: ({v.x:.3f}, {v.y:.3f}, {v.z:.3f})")
+
     chin, groin = lmk["chin"], lmk["groin"]
     lw, rw = lmk["left_wrist"], lmk["right_wrist"]
     la, ra = lmk["left_ankle"], lmk["right_ankle"]
+    ls, rs = lmk["left_shoulder"], lmk["right_shoulder"]
+    le, re = lmk["left_elbow"], lmk["right_elbow"]
+    lh, rh = lmk["left_hip"], lmk["right_hip"]
+    lk, rk = lmk["left_knee"], lmk["right_knee"]
 
     activate(metarig)
     bpy.ops.object.mode_set(mode="EDIT")
@@ -719,10 +731,10 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
         b.tail = groin + (chin - groin) * r1
         placed.add(name)
 
-    body_h = max(0.2, chin.z - groin.z)
-    for side, wrist in (("L", lw), ("R", rw)):
-        shoulder = Vector((wrist.x, wrist.y, groin.z + body_h * 0.82))
-        elbow    = shoulder + (wrist - shoulder) * 0.55 + Vector((0, 0.05, -0.02))
+    for side, shoulder, elbow, wrist in (
+        ("L", ls, le, lw),
+        ("R", rs, re, rw),
+    ):
         hand_end = wrist + (wrist - elbow).normalized() * 0.07
         for name, h, t in (
             (f"upper_arm.{side}", shoulder, elbow),
@@ -734,12 +746,11 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
                 b.head, b.tail = h, t
                 placed.add(name)
 
-    for side, ankle in (("L", la), ("R", ra)):
-        hip  = Vector((ankle.x, ankle.y, groin.z))
-        knee = Vector((ankle.x * 0.97,
-                       ankle.y - 0.04,
-                       (groin.z + ankle.z) / 2 + 0.02))
-        toe  = ankle + Vector((0, -0.09, 0))
+    for side, hip, knee, ankle in (
+        ("L", lh, lk, la),
+        ("R", rh, rk, ra),
+    ):
+        toe = ankle + Vector((0, -0.09, 0))
         for name, h, t in (
             (f"thigh.{side}", hip,   knee),
             (f"shin.{side}",  knee,  ankle),
