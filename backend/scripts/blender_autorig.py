@@ -24,7 +24,6 @@ from mathutils import Quaternion
 from mathutils import Vector
 from mathutils import Matrix
 
-
 # The frontend's ModelViewer rescales every preview to this many units tall,
 # and the landmark picker captures clicks in that space. We reuse the ratio
 # when converting landmark positions back into Blender world coords.
@@ -114,18 +113,13 @@ def import_model(path, fmt):
     fmt = fmt.lower()
     log(f"Importing {fmt}: {path}")
     if fmt == "fbx":
-        # Force manual axis orientation that matches three.js's FBXLoader
-        # (which loads vertices raw into a Y-up scene). Without this, Blender
-        # honours the FBX file's embedded UpAxis/FrontAxis metadata, which
-        # often disagrees with three.js — the upload preview and the rig
-        # then end up in mismatched orientations and the user's rotation
-        # buttons can't reconcile them.
-        bpy.ops.import_scene.fbx(
-            filepath=path,
-            use_manual_orientation=True,
-            axis_forward="-Z",
-            axis_up="Y",
-        )
+        # Let Blender read GlobalSettings.UpAxis/FrontAxis/CoordAxis from
+        # the FBX itself and apply the matching conversion. The result is
+        # canonical Blender Z-up regardless of whether the source was
+        # Y-up (Maya/3ds Max) or Z-up (Blender export). The frontend
+        # applies a parallel orientation pass before previewing the model
+        # so the upload preview and the post-import Blender state agree.
+        bpy.ops.import_scene.fbx(filepath=path)
     elif fmt in ("glb", "gltf"):
         # glTF spec mandates Y-up — both Blender and three.js agree, no override needed.
         bpy.ops.import_scene.gltf(filepath=path)
@@ -231,6 +225,42 @@ def _preview_quaternion_matrix(qx, qy, qz, qw):
     return preview_to_blender @ preview_rot @ blender_to_preview
 
 
+def _orientation_correction(b):
+    """Return a rotation matrix that brings a non-canonical-imported humanoid
+    onto Blender's Z-up axis, or None if the post-import AABB already looks
+    canonical. Mirrors the frontend's autoOrientFromSize.
+
+    A canonical standing humanoid has Z as both the height axis (largest
+    span) and the only asymmetric axis (extends from feet near 0 to head at
+    +Z). When an FBX with mismatched header/content goes through the
+    importer, the body can end up along Blender +Y instead, with X and Z
+    centred around 0. We detect that and rotate +90° around X.
+    """
+    sz = b["size"]
+    mn = b["min"]
+    mx = b["max"]
+
+    z_mid = (mx.z + mn.z) / 2
+    y_mid = (mx.y + mn.y) / 2
+
+    # Body extends along Y if Y span dominates AND Y is the asymmetric axis.
+    y_dominant = sz.y > sz.z * 1.5 and sz.y > 0.7 * sz.x
+    y_asymmetric = abs(y_mid) > 0.3 * sz.y and abs(y_mid) > 2 * abs(z_mid)
+
+    if y_dominant and y_asymmetric:
+        if y_mid > 0:
+            return {
+                "matrix": Matrix.Rotation(math.radians(90), 4, "X"),
+                "name": "+90° X (body along +Y → +Z)",
+            }
+        return {
+            "matrix": Matrix.Rotation(math.radians(-90), 4, "X"),
+            "name": "-90° X (body along -Y → +Z)",
+        }
+
+    return None
+
+
 def apply_user_rotation(
     meshes,
     user_rotation_x=0.0,
@@ -241,20 +271,44 @@ def apply_user_rotation(
     """Bake import-time transforms, then apply the user's preview-space
     rotation if non-zero. No automatic axis correction.
 
-    The upload preview displays the model in whatever orientation the
-    three.js loader produced. The user rotates with the slider until the
-    model is upright and facing forward. We trust that exact orientation
-    here — Blender's FBX/glTF importer (already run by import_model) has
-    given us the equivalent state in its own Z-up frame, and the preview
-    quaternion is converted to that frame by `_preview_quaternion_matrix`.
-
-    Removing the old AABB-based "longest axis → Z" pass + the PCA arm-
-    axis + chest-normal facing detection eliminates the silent rotations
-    that diverged from what the user saw in the upload preview.
+    Both sides of the pipeline now place the model in their respective
+    canonical orientations before any user input: Blender by reading the
+    FBX header (see `import_model`) and producing canonical Z-up, three.js
+    by applying a parallel auto-orient pass directly on the loaded object
+    so the preview shows canonical Y-up. The user's rotation is therefore
+    purely a fine-tune adjustment between two already-aligned canonical
+    frames, and `_preview_quaternion_matrix` translates it accordingly.
     """
     # Bake any import-time object transforms so world AABB / vertex data
     # are in a clean baseline state for the rest of the pipeline.
     apply_transforms(meshes, location=True, rotation=True, scale=True)
+
+    b0 = aabb(world_vertices(meshes))
+    log(
+        f"Post-import AABB (Blender frame, before user rotation): "
+        f"X[{b0['min'].x:+.2f},{b0['max'].x:+.2f}] "
+        f"Y[{b0['min'].y:+.2f},{b0['max'].y:+.2f}] "
+        f"Z[{b0['min'].z:+.2f},{b0['max'].z:+.2f}]"
+    )
+
+    # Auto-correction: some FBX files declare Y-up in their header but ship
+    # vertices that were authored lying down (head along source +Z). Blender's
+    # axis_up=Y conversion then leaves the model with body along Blender +Y
+    # instead of +Z. Mirror what the frontend does: detect this from the AABB
+    # and rotate to bring the body onto the +Z axis before applying the user's
+    # rotation, so both sides agree on the canonical pose.
+    correction = _orientation_correction(b0)
+    if correction is not None:
+        apply_matrix_world(meshes, correction["matrix"])
+        apply_transforms(meshes, rotation=True)
+        b0 = aabb(world_vertices(meshes))
+        log(f"Auto-correction applied: {correction['name']}")
+        log(
+            f"Post-correction AABB: "
+            f"X[{b0['min'].x:+.2f},{b0['max'].x:+.2f}] "
+            f"Y[{b0['min'].y:+.2f},{b0['max'].y:+.2f}] "
+            f"Z[{b0['min'].z:+.2f},{b0['max'].z:+.2f}]"
+        )
 
     if not any(abs(v) > 0.5 for v in (user_rotation_x, user_rotation_y, user_rotation_z)):
         log("User rotation = identity — leaving model in loader-supplied orientation.")
