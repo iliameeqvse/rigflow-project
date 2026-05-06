@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from "axios";
+import axios, { AxiosError, AxiosInstance, isAxiosError } from "axios";
 
 const api: AxiosInstance = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1",
@@ -149,6 +149,22 @@ export interface ModelRotationQuaternion {
   w: number;
 }
 
+export const LANDMARK_KEYS = [
+  "chin", "groin",
+  "left_shoulder", "right_shoulder",
+  "left_elbow", "right_elbow",
+  "left_wrist", "right_wrist",
+  "left_hip", "right_hip",
+  "left_knee", "right_knee",
+  "left_ankle", "right_ankle",
+] as const;
+
+export type LandmarkKey = typeof LANDMARK_KEYS[number];
+
+export type LandmarkPoint = [number, number, number]; // three.js editor space
+
+export type LandmarkSet = Record<LandmarkKey, LandmarkPoint>;
+
 // ── API calls ─────────────────────────────────────────────────────────────────
 
 export const uploadModel = (
@@ -174,6 +190,9 @@ export const uploadModel = (
 
 export const getRigStatus = (id: string) =>
   api.get<RigStatus>(`/rigs/${id}/status/`);
+
+export const getLandmarks = (id: string) =>
+  api.get<{ landmarks: LandmarkSet }>(`/rigs/${id}/landmarks/`);
 
 export const listRigs = () => api.get<RiggedModel[]>("/rigs/");
 
@@ -205,5 +224,46 @@ export const exportProject = (projectId: string, format: "glb" | "fbx") =>
   api.post<{ download_url: string }>(`/projects/${projectId}/export/`, {
     format,
   });
+
+// ── Error helpers ─────────────────────────────────────────────────────────────
+
+// DRF returns either { detail: "..." } (auth/throttle) or { field: ["..."] }
+// (serializer validation). This widens to whatever shape the server sent.
+export type ApiErrorPayload =
+  | { detail?: string; error?: string }
+  | Record<string, string | string[]>;
+
+export type ApiError = AxiosError<ApiErrorPayload>;
+
+/**
+ * Extract a human-readable message from an axios/unknown error.
+ * Optional `prefixFieldKey: false` skips the "fieldname: " prefix on
+ * field-validation errors (used by login where field names leak).
+ */
+export function extractApiError(
+  err: unknown,
+  fallback: string,
+  options: { prefixFieldKey?: boolean } = {},
+): string {
+  const { prefixFieldKey = true } = options;
+  if (!isAxiosError<ApiErrorPayload>(err)) {
+    return err instanceof Error ? err.message : fallback;
+  }
+  const data = err.response?.data;
+  if (!data) return err.message || fallback;
+  if (typeof data === "string") return data;
+
+  const detail = (data as { detail?: string }).detail;
+  if (detail) return detail;
+  const errorField = (data as { error?: string }).error;
+  if (errorField) return errorField;
+
+  const firstKey = Object.keys(data)[0];
+  if (!firstKey) return fallback;
+  const val = (data as Record<string, string | string[]>)[firstKey];
+  const text = Array.isArray(val) ? val[0] : String(val);
+  if (!prefixFieldKey || firstKey === "non_field_errors") return text;
+  return `${firstKey}: ${text}`;
+}
 
 export default api;
