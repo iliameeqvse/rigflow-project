@@ -596,6 +596,74 @@ def scale_mesh_to_metarig(meshes, metarig):
 
 
 # ---------------------------------------------------------------------------
+# Landmark schema
+# ---------------------------------------------------------------------------
+
+LANDMARK_KEYS = (
+    "chin", "groin",
+    "left_shoulder", "right_shoulder",
+    "left_elbow", "right_elbow",
+    "left_wrist", "right_wrist",
+    "left_hip", "right_hip",
+    "left_knee", "right_knee",
+    "left_ankle", "right_ankle",
+)
+
+LEGACY_LANDMARK_KEYS = (
+    "chin", "groin",
+    "left_wrist", "right_wrist",
+    "left_ankle", "right_ankle",
+)
+
+
+def _promote_legacy_landmarks(d):
+    """Given a dict containing at least the legacy 6 keys, return a 14-key
+    dict with shoulders/elbows/hips/knees filled in via the heuristics that
+    were inline in the original place_bones_from_landmarks.
+
+    Inputs may be either mathutils.Vector or any 3-tuple; the math below
+    works on either as long as +, -, * are supported (the standalone test
+    uses a tuple stub)."""
+    chin  = d["chin"]
+    groin = d["groin"]
+    body_h = max(0.2, chin.z - groin.z)
+
+    out = dict(d)
+    for side, wrist in (("left", d["left_wrist"]), ("right", d["right_wrist"])):
+        s_key = f"{side}_shoulder"
+        e_key = f"{side}_elbow"
+        if s_key not in out:
+            shoulder = _vec((wrist.x, wrist.y, groin.z + body_h * 0.82))
+            out[s_key] = shoulder
+        else:
+            shoulder = out[s_key]
+        if e_key not in out:
+            out[e_key] = shoulder + (wrist - shoulder) * 0.55 + _vec((0.0, 0.05, -0.02))
+
+    for side, ankle in (("left", d["left_ankle"]), ("right", d["right_ankle"])):
+        h_key = f"{side}_hip"
+        k_key = f"{side}_knee"
+        if h_key not in out:
+            out[h_key] = _vec((ankle.x, ankle.y, groin.z))
+        if k_key not in out:
+            out[k_key] = _vec((
+                ankle.x * 0.97,
+                ankle.y - 0.04,
+                (groin.z + ankle.z) / 2 + 0.02,
+            ))
+    return out
+
+
+def _vec(xyz):
+    """Return a Vector when bpy is available, else preserve the input
+    object's type (so the standalone test using tuple stubs still works)."""
+    try:
+        return Vector(xyz)
+    except Exception:
+        return type(xyz)(xyz) if isinstance(xyz, tuple) else xyz
+
+
+# ---------------------------------------------------------------------------
 # Landmarks (optional — used by /rigs/{id}/rerig-landmarks/)
 # ---------------------------------------------------------------------------
 
