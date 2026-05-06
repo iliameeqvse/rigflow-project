@@ -7,7 +7,11 @@ WORKDIR /app
 # as build args (passed from docker-compose.yml) and re-export as ENV so
 # Next.js's build step picks them up.
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
-ARG NEXT_PUBLIC_WS_URL=ws://localhost:8000
+# NEXT_PUBLIC_WS_URL is intentionally unset by default — backend asgi.py
+# has no Channels routing yet, so a WS connection would 404 every editor
+# mount. The frontend falls back to polling /status/ when this is empty.
+# Pass it from docker-compose only once a real consumer is wired up.
+ARG NEXT_PUBLIC_WS_URL=
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 

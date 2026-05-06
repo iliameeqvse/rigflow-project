@@ -25,6 +25,7 @@ class _StubVec(tuple):
     def __sub__(self, other): return _StubVec((self[0]-other[0], self[1]-other[1], self[2]-other[2]))
     def __add__(self, other): return _StubVec((self[0]+other[0], self[1]+other[1], self[2]+other[2]))
     def __mul__(self, s): return _StubVec((self[0]*s, self[1]*s, self[2]*s))
+    
 
 stub_mathutils = type(sys)("mathutils")
 stub_mathutils.Vector = _StubVec

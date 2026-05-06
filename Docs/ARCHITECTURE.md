@@ -23,7 +23,7 @@ How RigFlow's pieces fit together end-to-end. Read [PRODUCT_REQUIREMENTS](PRODUC
  │ (upload page)│                                      │
  └──────┬───────┘                                      ▼
         │                                ┌──────────────────────────┐
-        │  WebSocket: ws/jobs/{user_id}/ │ RiggedModelViewSet.create│
+        │  (Optional WS: ws/rig/{rig_id}/│ RiggedModelViewSet.create│
         │◄───────────────────────────────┤  • validate ext          │
         │  push_ws() progress events     │  • create RiggedModel    │
         │                                │  • auto_rig_model.delay()│
@@ -46,7 +46,7 @@ How RigFlow's pieces fit together end-to-end. Read [PRODUCT_REQUIREMENTS](PRODUC
  (Editor loads /media/rigs/<user>/<rig>/output.glb)
 ```
 
-The view returns `201` immediately after queuing the task. The frontend polls `/status/` and/or subscribes to the `user_{user_id}` WebSocket group for progress updates.
+The view returns `201` immediately after queuing the task. The frontend polls `/status/` for progress updates (every 3 s). The WebSocket subscription is opt-in — see [Real-time updates](#real-time-updates) below — and disabled by default because the backend's ASGI routing isn't wired up yet.
 
 For the Blender script's internals — landmark fitting, pose detection, weight binding — see [RIGGING_PIPELINE](RIGGING_PIPELINE.md).
 
@@ -100,11 +100,20 @@ Indexes: `(user, status)` and `(status, created_at)`.
 
 ## Real-time updates
 
-- Channel layer: `channels_redis.core.RedisChannelLayer`, hosts = `[REDIS_URL]`.
-- Group name: `user_{user_id}`.
-- Producer: `apps/rigging/tasks.py:push_ws()` is called from inside the pipeline.
-- Consumer: subscribed by the frontend via `hooks/useRigStatus.ts`.
-- ASGI app: `rigflow.asgi.application`. Daphne is the production ASGI server (`docker/docker-compose.yml`).
+The pipeline pushes progress events to Channels group `user_{user_id}` from `apps/rigging/tasks.py:push_ws()`. The infrastructure is half-wired:
+
+- Channel layer: `channels_redis.core.RedisChannelLayer`, hosts = `[REDIS_URL]` — configured.
+- ASGI app: `rigflow.asgi.application` — currently `get_asgi_application()` only, **no Channels routing**.
+- Consumer / URL routing: **not yet implemented**. There is no `ProtocolTypeRouter` and no consumer class for `/ws/rig/{rig_id}/`.
+
+Net effect today: `push_ws()` calls succeed (channel layer accepts the send), but no client receives them — there's no consumer subscribed. The frontend's `hooks/useRigStatus.ts` only opens a WebSocket if `NEXT_PUBLIC_WS_URL` is set; both `frontend/Dockerfile` and `docker-compose.yml` leave it empty so the frontend falls back to polling `GET /rigs/{id}/status/` every 3 s. Polling is sufficient for the current pipeline (steps fire seconds apart, not milliseconds), so this is a known limitation, not a bug.
+
+To turn the WebSocket flow back on:
+1. Add a `URLRouter` + `RigStatusConsumer` in `apps/rigging/consumers.py` that joins `user_{user_id}` and forwards `task.update` events.
+2. Wrap `rigflow.asgi.application` with `ProtocolTypeRouter({"http": ..., "websocket": ...})`.
+3. Set `NEXT_PUBLIC_WS_URL` (e.g. `ws://localhost:8000` or `wss://example.com`) at frontend build time.
+
+Daphne is the production ASGI server (`docker/docker-compose.yml`) and already handles both HTTP and WebSocket — the missing piece is the routing/consumer code, not the server.
 
 ## Auth
 

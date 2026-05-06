@@ -12,24 +12,15 @@ The git root is `rigflow-project/`. Source lives at `rigflow-project/rigflow-pro
 
 **Always `cd rigflow-project/` first** before running any of the commands in [DEVELOPMENT](DEVELOPMENT.md).
 
-## `requirements.txt` at the repo root is an SSH private key
+## ~~`requirements.txt` at the repo root is an SSH private key~~ (removed)
 
-The file at `rigflow-project/rigflow-project/requirements.txt` (the *outer* requirements) is a **PEM-formatted SSH private key**, not Python deps. There's also a `requirements.txt.pub` next to it (the public half).
+Historical: a PEM-formatted SSH private key was committed at `rigflow-project/rigflow-project/requirements.txt` (with its public half at `requirements.txt.pub`). Both files have been removed from the working tree. The real Python deps were always at `backend/requirements.txt` and still are.
 
-The real Python deps are at `backend/requirements.txt`. Use that one.
+**If you have an existing checkout from before the removal**, the leaked key should be considered compromised and rotated wherever it was authorised — pruning a file from the working tree does not remove it from git history.
 
-If you ever `pip install -r requirements.txt` at the wrong location, pip will choke on the PEM headers. No real damage — just confusion.
+## ~~`apps/throttles.py` is duplicated~~ (deduplicated)
 
-> **Action item**: this should be moved out of the repo and into a secret store. Filed in [ROADMAP § Phase 1](ROADMAP.md).
-
-## `apps/throttles.py` is duplicated
-
-The entire module is **appended to itself**. Every throttle class is defined twice. Python keeps the second definition, so behaviour is correct, but:
-
-- Edits must be made to **both halves**, or the duplicate must be cleaned up first.
-- If you clean it up, run the test suite (such as it is) and a manual smoke test on each throttle scope.
-
-> **Action item**: deduplicate. Filed in [ROADMAP § Phase 1](ROADMAP.md).
+Historical: the entire module was appended to itself, so every throttle class was defined twice. Python kept the second copy. The file has been deduplicated — there is now exactly one definition of each class. If you see duplication reappear after a rebase, fix the rebase rather than living with it.
 
 ## Blender failures mark the row `failed` (no more silent passthrough)
 
@@ -60,6 +51,16 @@ The current state pairs `AnimationListOrUploadView` (single class for GET/POST) 
 Earlier code spawned a raw `threading.Thread` from `rerig_landmarks` (intentional — bypassed Celery to keep the response 202-fast). The current code calls `auto_rig_model_with_landmarks.delay(...)` like the other two endpoints. Local eager mode means it still effectively runs synchronously, but the response shape (`202 Accepted` with `{status: "pending", rig_id}`) is preserved.
 
 If you see a `threading.Thread(...)` reference in `views.py`, the rebase undid this — fix it back to `.delay()`.
+
+## WebSockets are half-wired (polling fallback is the production path)
+
+`tasks.push_ws()` posts events to channel group `user_{user_id}` and Channels + Redis are installed and configured — but `rigflow/asgi.py` is plain `get_asgi_application()`, so there is **no `ProtocolTypeRouter`, no URL routing, and no consumer class**. A WebSocket connection to `/ws/rig/{rig_id}/` proxies straight to Django's HTTP handler and 404s.
+
+The frontend handles this by only opening a WS when `NEXT_PUBLIC_WS_URL` is set. Both `frontend/Dockerfile` and `docker/docker-compose.yml` leave it empty by default, so `useRigStatus.ts` falls straight through to polling `GET /rigs/{id}/status/`.
+
+Symptom if you ever set `NEXT_PUBLIC_WS_URL` without first wiring up Channels: every editor mount logs a WebSocket failure in the console and rolls back to polling (after the 3-second WS timeout in `useRigStatus.ts`).
+
+> **Action item**: add `apps/rigging/consumers.py`, wrap `rigflow.asgi.application` in a `ProtocolTypeRouter`, and only then re-set `NEXT_PUBLIC_WS_URL`. See [ARCHITECTURE § Real-time updates](ARCHITECTURE.md#real-time-updates).
 
 ## CLAUDE.md drift
 

@@ -725,7 +725,7 @@ def _bottom_cluster_centroids(verts, bottom_frac=0.03):
     return centroid(left), centroid(right)
 
 
-def detect_landmarks(meshes, pose=None):
+def detect_landmarks(meshes, pose=None, reference_height=None):
     """Return a 14-key landmark dict in three.js editor space.
 
     For T-pose with confidence ≥ 0.75 use a hybrid algorithm: vertex
@@ -734,7 +734,7 @@ def detect_landmarks(meshes, pose=None):
     fall back to AABB ratios via _promote_legacy_landmarks.
     """
     b = aabb(world_vertices(meshes))
-    height_blender = max(b["size"].z, 1e-3)
+    height_blender = max(reference_height or b["size"].z, 1e-3)
     s = THREE_DISPLAY_HEIGHT / height_blender
 
     def to_three(bv):
@@ -1306,11 +1306,6 @@ def main():
         "confidence": pose_info["confidence"],
     }
 
-    if args.landmarks_out:
-        detected = detect_landmarks(meshes, pose=detected_pose)
-        Path(args.landmarks_out).write_text(json.dumps(detected, indent=2))
-        log(f"Wrote {len(detected)} detected landmarks → {args.landmarks_out}")
-
     # Use the metarig's height as the canonical reference instead of
     # recomputing the mesh AABB. scale_mesh_to_metarig already aligned
     # the body to this; reading the live mesh AABB here picks up stray
@@ -1320,12 +1315,17 @@ def main():
     mesh_h = armature_aabb(metarig)["size"].z
     log(f"Landmark conversion using metarig height: {mesh_h:.3f}m")
 
+    if args.landmarks_out:
+        detected = detect_landmarks(meshes, pose=detected_pose, reference_height=mesh_h)
+        Path(args.landmarks_out).write_text(json.dumps(detected, indent=2))
+        log(f"Wrote {len(detected)} detected landmarks → {args.landmarks_out}")
+
     if args.landmarks:
         user_landmarks = json.loads(args.landmarks)
         log(f"Mode: LANDMARK (user-supplied {len(user_landmarks)} keys)")
         place_bones_from_landmarks(metarig, user_landmarks, mesh_h)
     else:
-        auto_landmarks = detect_landmarks(meshes, pose=detected_pose)
+        auto_landmarks = detect_landmarks(meshes, pose=detected_pose, reference_height=mesh_h)
         log(f"Mode: AUTO (detected {len(auto_landmarks)} landmarks)")
         place_bones_from_landmarks(metarig, auto_landmarks, mesh_h)
 

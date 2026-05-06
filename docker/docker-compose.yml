@@ -144,7 +144,13 @@ services:
       # browser-side code.
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
-        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000}
+        # NEXT_PUBLIC_WS_URL is intentionally not defaulted: backend asgi.py
+        # is plain get_asgi_application() with no Channels routing, so
+        # opening a WS to /ws/rig/<id>/ would 404 every editor mount. The
+        # frontend falls back to polling /status/ when this env var is unset.
+        # Set NEXT_PUBLIC_WS_URL once a Channels consumer is wired in
+        # rigflow.asgi (and the consumer publishes to group user_{user_id}).
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
     ports:
       - "3000:3000"
     depends_on:

@@ -1,6 +1,8 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from .models import UserProfile
+
 
 User = get_user_model()
 
@@ -17,6 +19,10 @@ class RegisterSerializer(serializers.ModelSerializer):
         user = User(**validated_data)
         user.set_password(password)
         user.save()
+        # Belt-and-braces: the post_save signal already creates the profile,
+        # but this keeps the serializer self-contained if signals are ever
+        # disconnected (e.g. in a test that monkeypatches dispatch).
+        UserProfile.objects.get_or_create(user=user)
         return user
 
 

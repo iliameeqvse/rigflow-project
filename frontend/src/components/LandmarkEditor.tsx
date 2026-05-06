@@ -67,24 +67,24 @@ function defaultLandmarks(bbox: THREE.Box3): LandmarkPositions {
   const size = new THREE.Vector3();
   bbox.getSize(size);
   const cx = (bbox.min.x + bbox.max.x) / 2;
-  const cy = (bbox.min.y + bbox.max.y) / 2;
-  const h  = size.z;
+  const cz = (bbox.min.z + bbox.max.z) / 2;
+  const h  = size.y;
   const w  = size.x;
   return {
-    chin:           [cx,             cy, bbox.min.z + h * 0.86],
-    groin:          [cx,             cy, bbox.min.z + h * 0.51],
-    left_shoulder:  [cx - w * 0.18,  cy, bbox.min.z + h * 0.78],
-    right_shoulder: [cx + w * 0.18,  cy, bbox.min.z + h * 0.78],
-    left_elbow:     [cx - w * 0.36,  cy, bbox.min.z + h * 0.60],
-    right_elbow:    [cx + w * 0.36,  cy, bbox.min.z + h * 0.60],
-    left_wrist:     [cx - w * 0.52,  cy, bbox.min.z + h * 0.44],
-    right_wrist:    [cx + w * 0.52,  cy, bbox.min.z + h * 0.44],
-    left_hip:       [cx - w * 0.10,  cy, bbox.min.z + h * 0.51],
-    right_hip:      [cx + w * 0.10,  cy, bbox.min.z + h * 0.51],
-    left_knee:      [cx - w * 0.10,  cy, bbox.min.z + h * 0.27],
-    right_knee:     [cx + w * 0.10,  cy, bbox.min.z + h * 0.27],
-    left_ankle:     [cx - w * 0.14,  cy, bbox.min.z + h * 0.04],
-    right_ankle:    [cx + w * 0.14,  cy, bbox.min.z + h * 0.04],
+    chin:           [cx,             bbox.min.y + h * 0.92, cz],
+    groin:          [cx,             bbox.min.y + h * 0.50, cz],
+    left_shoulder:  [cx + w * 0.18,  bbox.min.y + h * 0.82, cz],
+    right_shoulder: [cx - w * 0.18,  bbox.min.y + h * 0.82, cz],
+    left_elbow:     [cx + w * 0.36,  bbox.min.y + h * 0.82, cz + 0.05],
+    right_elbow:    [cx - w * 0.36,  bbox.min.y + h * 0.82, cz + 0.05],
+    left_wrist:     [cx + w * 0.52,  bbox.min.y + h * 0.82, cz],
+    right_wrist:    [cx - w * 0.52,  bbox.min.y + h * 0.82, cz],
+    left_hip:       [cx + w * 0.10,  bbox.min.y + h * 0.50, cz],
+    right_hip:      [cx - w * 0.10,  bbox.min.y + h * 0.50, cz],
+    left_knee:      [cx + w * 0.10,  bbox.min.y + h * 0.25, cz],
+    right_knee:     [cx - w * 0.10,  bbox.min.y + h * 0.25, cz],
+    left_ankle:     [cx + w * 0.10,  bbox.min.y,            cz],
+    right_ankle:    [cx - w * 0.10,  bbox.min.y,            cz],
   };
 }
 

@@ -14,11 +14,21 @@ All endpoints are mounted under `/api/v1/`. The OpenAPI schema is the source of 
 
 ### `POST /auth/register/`
 
-Create an account. Returns `{id, email, username}`. **Does not return tokens** — log in separately.
+Create an account. Returns the same `{access, refresh, user}` shape as `/auth/login/` so the frontend signs the user in immediately after signup.
 
 ```json
+// request
 { "email": "user@example.com", "username": "myname", "password": "securepass123" }
+
+// 201 response
+{
+  "access":  "eyJhbGciOiJI...",
+  "refresh": "eyJhbGciOiJI...",
+  "user":    { "id": 1, "email": "user@example.com", "username": "myname" }
+}
 ```
+
+Side effect: a `UserProfile` row is created at the same time (via post_save signal in `apps.users`) so subsequent uploads attach to the user's own profile rather than falling back to the demo profile.
 
 ### `POST /auth/login/`
 

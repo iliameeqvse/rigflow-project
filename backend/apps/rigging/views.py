@@ -1,4 +1,5 @@
 import json
+import math
 import threading
 import time as time_module
 from django.contrib.auth import get_user_model
@@ -27,6 +28,16 @@ User = get_user_model()
 # doesn't leave a half-written file in MEDIA_ROOT.
 MAX_RIG_UPLOAD_MB = 100
 MAX_RIG_UPLOAD_BYTES = MAX_RIG_UPLOAD_MB * 1024 * 1024
+
+LANDMARK_KEYS = (
+    "chin", "groin",
+    "left_shoulder", "right_shoulder",
+    "left_elbow", "right_elbow",
+    "left_wrist", "right_wrist",
+    "left_hip", "right_hip",
+    "left_knee", "right_knee",
+    "left_ankle", "right_ankle",
+)
 
 
 def _get_or_create_demo_profile():
@@ -61,6 +72,32 @@ def _glb_url(request, rig) -> str | None:
     base = request.build_absolute_uri(rig.rigged_glb.url)
     ts   = int(rig.updated_at.timestamp()) if rig.updated_at else int(time_module.time())
     return f"{base}?v={ts}"
+
+
+def _validate_landmark_payload(value):
+    if not isinstance(value, dict):
+        return None, "Landmarks must be an object keyed by landmark name."
+
+    missing = [key for key in LANDMARK_KEYS if key not in value]
+    if missing:
+        return None, f"Missing landmark(s): {', '.join(missing)}"
+
+    cleaned = {}
+    for key in LANDMARK_KEYS:
+        point = value[key]
+        if not isinstance(point, (list, tuple)) or len(point) != 3:
+            return None, f"Landmark '{key}' must be a 3-number array."
+        coords = []
+        for coord in point:
+            try:
+                number = float(coord)
+            except (TypeError, ValueError):
+                return None, f"Landmark '{key}' contains a non-numeric coordinate."
+            if not math.isfinite(number):
+                return None, f"Landmark '{key}' contains a non-finite coordinate."
+            coords.append(number)
+        cleaned[key] = coords
+    return cleaned, None
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -272,7 +309,7 @@ class RiggedModelViewSet(ModelViewSet):
     @extend_schema(
         summary="Re-rig using landmark positions",
         description=(
-            "Accepts 6 landmark world positions from the 3D editor and "
+            "Accepts 14 landmark world positions from the 3D editor and "
             "rebuilds the rig with precise bone placement.\n\n"
             "**Throttle:** 10/hour (same as upload — runs Blender).\n\n"
             "Returns 202 immediately; poll `/status/` for progress."
@@ -291,15 +328,14 @@ class RiggedModelViewSet(ModelViewSet):
         except RiggedModel.DoesNotExist:
             return Response({"error": "Rig not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        landmarks = request.data.get("landmarks")
-        if not landmarks:
+        raw_landmarks = request.data.get("landmarks")
+        if not raw_landmarks:
             return Response({"error": "Missing landmarks."}, status=status.HTTP_400_BAD_REQUEST)
 
-        required = {"chin", "left_wrist", "right_wrist", "groin", "left_ankle", "right_ankle"}
-        missing  = required - set(landmarks.keys())
-        if missing:
+        landmarks, validation_error = _validate_landmark_payload(raw_landmarks)
+        if validation_error:
             return Response(
-                {"error": f"Missing landmark(s): {', '.join(missing)}"},
+                {"error": validation_error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
