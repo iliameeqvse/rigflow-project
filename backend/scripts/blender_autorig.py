@@ -57,6 +57,10 @@ def parse_args():
                    help="Optional path to write detected-pose JSON.")
     p.add_argument("--format",    default="fbx")
     p.add_argument("--landmarks", default=None)
+    p.add_argument("--landmarks-out", default=None,
+                   help="If set, write detected landmarks (14-key three.js-space "
+                        "JSON) to this path after auto-correction. Used by the "
+                        "Celery task to persist landmarks on the RiggedModel.")
     # Manual preview-space Euler rotation in degrees. The upload preview runs
     # in three.js Y-up; after step 1 we convert those axes back into Blender's
     # Z-up space and trust the user's orientation over auto detection.
@@ -664,6 +668,50 @@ def _vec(xyz):
 
 
 # ---------------------------------------------------------------------------
+# Landmark detection (stub — Task 5 will add T-pose hybrid detection)
+# ---------------------------------------------------------------------------
+
+def detect_landmarks(meshes, pose=None):
+    """Return a 14-key landmark dict in three.js editor space (Y-up,
+    normalized to THREE_DISPLAY_HEIGHT units tall). For now this is the
+    AABB-default fallback only — Task 5 adds T-pose hybrid detection.
+
+    `pose` may be None, or a dict like {"name": "t_pose", "confidence": 0.84}.
+    """
+    b = aabb(world_vertices(meshes))
+    height_blender = b["size"].z
+    if height_blender < 1e-3:
+        height_blender = 1.0
+    s = THREE_DISPLAY_HEIGHT / height_blender
+
+    # Convert a Blender world coord to three.js editor space.
+    # threejs_to_blender does: (x*s, -z*s, y*s) where s=mesh_h/2.
+    # The inverse: three_x = bx/s_inv, three_y = bz/s_inv, three_z = -by/s_inv
+    # with s_inv = mesh_height_blender / THREE_DISPLAY_HEIGHT.
+    def to_three(bv):
+        return (bv.x * s, bv.z * s, -bv.y * s)
+
+    mn, mx = b["min"], b["max"]
+    body_h = mx.z - mn.z
+    width = max(mx.x - mn.x, 1e-3)
+
+    # AABB-derived defaults, mirroring the legacy heuristic ratios.
+    chin   = Vector((0.0, 0.0, mn.z + 0.92 * body_h))
+    groin  = Vector((0.0, 0.0, mn.z + 0.50 * body_h))
+    lw     = Vector((mx.x, 0.0, mn.z + 0.82 * body_h))
+    rw     = Vector((mn.x, 0.0, mn.z + 0.82 * body_h))
+    la     = Vector((+0.10 * width, 0.0, mn.z))
+    ra     = Vector((-0.10 * width, 0.0, mn.z))
+
+    six = {"chin": chin, "groin": groin,
+           "left_wrist": lw, "right_wrist": rw,
+           "left_ankle": la, "right_ankle": ra}
+    fourteen_blender = _promote_legacy_landmarks(six)
+
+    return {k: to_three(v) for k, v in fourteen_blender.items()}
+
+
+# ---------------------------------------------------------------------------
 # Landmarks (optional — used by /rigs/{id}/rerig-landmarks/)
 # ---------------------------------------------------------------------------
 
@@ -1067,6 +1115,11 @@ def main():
             )
         ) else None,
     )
+
+    if args.landmarks_out:
+        detected = detect_landmarks(meshes, pose=None)  # pose param wired in Task 5
+        Path(args.landmarks_out).write_text(json.dumps(detected, indent=2))
+        log(f"Wrote {len(detected)} detected landmarks → {args.landmarks_out}")
 
     metarig = create_metarig()
     remove_face_bones(metarig)
