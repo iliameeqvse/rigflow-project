@@ -748,8 +748,10 @@ def detect_landmarks(meshes, pose=None, reference_height=None):
             and pose.get("name") == "t_pose"
             and pose.get("confidence", 0.0) >= 0.75)
 
-    # AABB defaults (used as fallbacks even on the T-pose path for the
-    # landmarks slicing hasn't been wired up for yet).
+    # AABB defaults — used directly for non-T-pose / low-confidence inputs,
+    # and as the seed for chin / groin (and downstream shoulders / elbows /
+    # hips / knees via _promote_legacy_landmarks) on the T-pose path. The
+    # T-pose path overrides only `lw`, `rw`, `la`, `ra` from real geometry.
     chin   = Vector((0.0, 0.0, mn.z + 0.92 * body_h))
     groin  = Vector((0.0, 0.0, mn.z + 0.50 * body_h))
     lw     = Vector((mx.x, 0.0, mn.z + 0.82 * body_h))
@@ -760,115 +762,36 @@ def detect_landmarks(meshes, pose=None, reference_height=None):
     if is_t:
         verts = world_vertices(meshes)
 
-        # 1. Wrists: vertex extremities (Task 5, unchanged).
+        # Wrists: vertex extremities. For non-humanoid silhouettes (paws,
+        # accessories) this can land on the fingertip / prop rather than
+        # the wrist joint — the editor's /rerig-landmarks/ flow is the
+        # workaround.
         lw_v = _extreme_vertex(verts, axis=0, sign=+1)
         rw_v = _extreme_vertex(verts, axis=0, sign=-1)
         lw = Vector((lw_v.x, lw_v.y, lw_v.z))
         rw = Vector((rw_v.x, rw_v.y, rw_v.z))
 
-        # 2. Ankles: bottom-cluster centroids split by X sign (Task 5).
+        # Ankles: bottom-cluster centroids split by X sign.
         ankles = _bottom_cluster_centroids(verts)
         if ankles is not None:
             la, ra = ankles
 
-        # 3. Slice the mesh; each slice's X-extent + cluster count drives the
-        #    chin / shoulders / groin / hips landmarks.
-        slices = _slice_z(verts, n_slices=50)
-        gap_threshold = 0.05 * width
-
-        # 3a. Shoulders: scan top → bottom, find first slice whose X-extent
-        #     reaches ≥ 80% of the full mesh width (torso → torso+arms).
-        shoulder_z = None
-        shoulder_x_max = 0.0
-        shoulder_x_min = 0.0
-        for z_lo, z_hi, band in reversed(slices):
-            if not band:
-                continue
-            x_min = min(v.x for v in band)
-            x_max = max(v.x for v in band)
-            if (x_max - x_min) >= 0.80 * width:
-                shoulder_z = (z_lo + z_hi) / 2
-                shoulder_x_max = x_max
-                shoulder_x_min = x_min
-                break
-        if shoulder_z is None:
-            shoulder_z = mn.z + 0.82 * body_h
-            shoulder_x_max = +0.18 * width
-            shoulder_x_min = -0.18 * width
-
-        # 3b. Chin: scan from shoulder upward, find first slice whose X-extent
-        #     narrows below 30% of full width (head/neck region).
-        chin_z = None
-        for z_lo, z_hi, band in slices:
-            if z_lo < shoulder_z + 0.05 * body_h:
-                continue  # skip shoulder/torso bands
-            if not band:
-                continue
-            x_min = min(v.x for v in band)
-            x_max = max(v.x for v in band)
-            if (x_max - x_min) <= 0.30 * width:
-                chin_z = (z_lo + z_hi) / 2
-                break
-        if chin_z is None:
-            chin_z = mn.z + 0.92 * body_h
-        chin = Vector((0.0, 0.0, chin_z))
-
-        # 3c. Groin: scan bottom → top, find highest slice with two distinct
-        #     X-clusters (legs still separate). The slice above is the pelvis.
-        groin_z = None
-        leg_clusters = None
-        for z_lo, z_hi, band in slices:
-            clusters = _x_clusters(band, gap_threshold)
-            if len(clusters) >= 2:
-                groin_z = (z_lo + z_hi) / 2
-                leg_clusters = clusters
-                # don't break; want highest such slice
-        if groin_z is None:
-            groin_z = mn.z + 0.50 * body_h
-        groin = Vector((0.0, 0.0, groin_z))
-
-        # 3d. Shoulders: at shoulder_z, with X = max(L) / min(R).
-        ls_v = Vector((shoulder_x_max, 0.0, shoulder_z))
-        rs_v = Vector((shoulder_x_min, 0.0, shoulder_z))
-
-        # 3e. Hips: at groin_z, X = centroid of each leg cluster.
-        if leg_clusters and len(leg_clusters) >= 2:
-            # Left = positive-X cluster, right = negative-X cluster.
-            left_cluster  = max(leg_clusters, key=lambda c: sum(v.x for v in c)/len(c))
-            right_cluster = min(leg_clusters, key=lambda c: sum(v.x for v in c)/len(c))
-            lh_x = sum(v.x for v in left_cluster)  / len(left_cluster)
-            rh_x = sum(v.x for v in right_cluster) / len(right_cluster)
-        else:
-            lh_x, rh_x = +0.10 * width, -0.10 * width
-        lh = Vector((lh_x, 0.0, groin_z))
-        rh = Vector((rh_x, 0.0, groin_z))
-
-        # Override the AABB defaults for the slicing-derived landmarks.
-        log(f"T-pose hybrid detection: shoulder_z={shoulder_z:.3f} chin_z={chin_z:.3f} groin_z={groin_z:.3f}")
+        # Slice-based chin / groin / shoulders / hips was tried in commit
+        # 38c0eba9 but the groin scan ("highest slice with 2+ X-clusters")
+        # fires on arm-induced clusters at SHOULDER height in T-pose,
+        # placing the pelvis above the chin and inverting the rig. We let
+        # _promote_legacy_landmarks fill those in from the AABB defaults
+        # below — anatomically sane and consistent with the editor's
+        # starting positions.
+        log("T-pose detection: wrists & ankles via vertex extremities; "
+            "chin/groin/shoulders/hips via AABB defaults")
     else:
         log("Non-T pose or low confidence — landmark detection falls back to AABB defaults")
-        ls_v = None
-        rs_v = None
-        lh = None
-        rh = None
 
     six = {"chin": chin, "groin": groin,
            "left_wrist": lw, "right_wrist": rw,
            "left_ankle": la, "right_ankle": ra}
     fourteen_blender = _promote_legacy_landmarks(six)
-
-    if is_t:
-        # Override heuristic shoulders / hips with slice-derived values.
-        # Elbow/knee remain heuristic but recomputed from the new shoulders/hips.
-        if ls_v is not None: fourteen_blender["left_shoulder"]  = ls_v
-        if rs_v is not None: fourteen_blender["right_shoulder"] = rs_v
-        if lh   is not None: fourteen_blender["left_hip"]       = lh
-        if rh   is not None: fourteen_blender["right_hip"]      = rh
-        fourteen_blender["left_elbow"]  = ls_v + (lw - ls_v) * 0.55 + Vector((0.0, 0.05, -0.02))
-        fourteen_blender["right_elbow"] = rs_v + (rw - rs_v) * 0.55 + Vector((0.0, 0.05, -0.02))
-        fourteen_blender["left_knee"]   = Vector((la.x * 0.97, la.y - 0.04, (groin.z + la.z)/2 + 0.02))
-        fourteen_blender["right_knee"]  = Vector((ra.x * 0.97, ra.y - 0.04, (groin.z + ra.z)/2 + 0.02))
-
     return {k: to_three(v) for k, v in fourteen_blender.items()}
 
 
