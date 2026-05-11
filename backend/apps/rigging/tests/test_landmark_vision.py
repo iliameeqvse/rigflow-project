@@ -35,3 +35,24 @@ class ProviderDispatchTests(SimpleTestCase):
             world_aabb=((-1, 0, -1), (1, 2, 1)),
         )
         self.assertIsNone(NoneProvider().detect(req))
+
+    @patch.dict(os.environ,
+                {"LANDMARK_VISION_PROVIDER": "claude", "ANTHROPIC_API_KEY": "sk-test"},
+                clear=True)
+    def test_claude_with_api_key_returns_claude_provider(self):
+        from apps.rigging.landmark_vision.claude_provider import ClaudeProvider
+        self.assertIsInstance(get_provider(), ClaudeProvider)
+
+    @patch.dict(os.environ,
+                {"LANDMARK_VISION_PROVIDER": "claude", "ANTHROPIC_API_KEY": "sk-test"},
+                clear=True)
+    def test_claude_stub_detect_returns_none(self):
+        from apps.rigging.landmark_vision.base import VisionRequest
+        from apps.rigging.landmark_vision.claude_provider import ClaudeProvider
+        req = VisionRequest(
+            rig_id="stub-test",
+            views={},
+            mesh_objects=[],
+            world_aabb=((-1, 0, -1), (1, 2, 1)),
+        )
+        self.assertIsNone(ClaudeProvider().detect(req))
