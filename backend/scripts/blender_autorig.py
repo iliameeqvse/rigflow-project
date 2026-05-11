@@ -785,8 +785,35 @@ def detect_landmarks(meshes, pose=None, reference_height=None):
         # starting positions.
         log("T-pose detection: wrists & ankles via vertex extremities; "
             "chin/groin/shoulders/hips via AABB defaults")
+
+    elif (pose is not None
+          and pose.get("name") == "a_pose"
+          and pose.get("confidence", 0.0) >= 0.75):
+        verts = world_vertices(meshes)
+
+        # Wrists: A-pose arms hang at ~45° from horizontal. Find the vertex
+        # furthest along the arm ray direction (cos θ · x − sin θ · z) where
+        # θ is the measured arm angle from horizontal.
+        raw_angle = pose.get("angle_deg")
+        angle_rad = math.radians(float(raw_angle)) if raw_angle is not None else math.radians(45.0)
+        cx = math.cos(angle_rad)
+        cz = math.sin(angle_rad)
+        lw_v = max(verts, key=lambda v: +(cx * v.x - cz * v.z))
+        rw_v = max(verts, key=lambda v: -(cx * v.x - cz * v.z))
+        lw = Vector((lw_v.x, lw_v.y, lw_v.z))
+        rw = Vector((rw_v.x, rw_v.y, rw_v.z))
+
+        # Ankles: same bottom-cluster approach as T-pose.
+        ankles = _bottom_cluster_centroids(verts)
+        if ankles is not None:
+            la, ra = ankles
+
+        log(f"A-pose detection (angle={math.degrees(angle_rad):.1f}deg): "
+            "wrists via ray-extreme, ankles via bottom-cluster; "
+            "chin/groin/shoulders/hips via AABB defaults")
+
     else:
-        log("Non-T pose or low confidence — landmark detection falls back to AABB defaults")
+        log("Non-T/A pose or low confidence — landmark detection falls back to AABB defaults")
 
     six = {"chin": chin, "groin": groin,
            "left_wrist": lw, "right_wrist": rw,
@@ -1225,8 +1252,9 @@ def main():
     # {"name": <classification>, "confidence": <float 0-1>}.
     # detect_pose returns confidence already on [0, 1].
     detected_pose = {
-        "name": pose_info["classification"],
+        "name":       pose_info["classification"],
         "confidence": pose_info["confidence"],
+        "angle_deg":  pose_info.get("angle_deg"),  # arm tilt from horizontal; used by A-pose detector
     }
 
     # Use the metarig's height as the canonical reference instead of
