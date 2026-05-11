@@ -105,7 +105,7 @@ export default function UploadAnimationPage() {
         className="mx-auto w-full max-w-2xl px-6"
       >
         <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">
-          // Contribute / Animations
+          {"// Contribute / Animations"}
         </span>
         <h1 className="mt-3 text-balance text-4xl font-bold tracking-[-0.02em] text-foreground sm:text-5xl">
           Upload an animation

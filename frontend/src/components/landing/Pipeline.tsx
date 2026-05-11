@@ -45,7 +45,7 @@ export function Pipeline() {
       <div className="mx-auto max-w-7xl px-6">
         <Reveal className="max-w-3xl">
           <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">
-            // Pipeline
+            {"// Pipeline"}
           </span>
           <h2 className="mt-4 text-balance text-4xl font-bold tracking-[-0.02em] text-foreground sm:text-5xl">
             Three steps. No rigging chair time.

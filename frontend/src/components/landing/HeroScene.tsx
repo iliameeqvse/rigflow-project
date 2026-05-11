@@ -182,6 +182,7 @@ function GroundGrid() {
 
 function Particles({ count = 60 }: { count?: number }) {
   const ref = useRef<THREE.Points>(null);
+  /* eslint-disable react-hooks/purity */
   const positions = useMemo(() => {
     const arr = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
@@ -194,6 +195,7 @@ function Particles({ count = 60 }: { count?: number }) {
     }
     return arr;
   }, [count]);
+  /* eslint-enable react-hooks/purity */
 
   useFrame((_, delta) => {
     if (ref.current) ref.current.rotation.y += delta * 0.06;
@@ -221,6 +223,7 @@ export default function HeroScene() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setReady(true);
     const onMove = (e: MouseEvent) => {
       mouse.current.x = (e.clientX / window.innerWidth - 0.5) * 2;

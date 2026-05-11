@@ -49,10 +49,10 @@ export function Features() {
       <div className="mx-auto max-w-7xl px-6">
         <Reveal className="max-w-3xl">
           <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">
-            // What's inside
+            {"// What's inside"}
           </span>
           <h2 className="mt-4 text-balance text-4xl font-bold tracking-[-0.02em] text-foreground sm:text-5xl">
-            Built for the boring parts you'd rather skip.
+            Built for the boring parts you&apos;d rather skip.
           </h2>
           <p className="mt-5 max-w-2xl text-lg text-muted-foreground">
             Every feature exists because we got tired of the same step ourselves.

@@ -53,7 +53,7 @@ export default function LoginPage() {
 
           <div className="px-8 py-10">
             <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">
-              // Welcome back
+              {"// Welcome back"}
             </span>
             <h1 className="mt-3 text-3xl font-bold tracking-[-0.02em] text-foreground">
               Sign in to RigFlow

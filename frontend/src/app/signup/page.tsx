@@ -48,7 +48,7 @@ export default function SignupPage() {
 
           <div className="px-8 py-10">
             <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">
-              // Get started
+              {"// Get started"}
             </span>
             <h1 className="mt-3 text-3xl font-bold tracking-[-0.02em] text-foreground">
               Create your account

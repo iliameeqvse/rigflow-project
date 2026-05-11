@@ -35,7 +35,7 @@ export function FinalCTA() {
       <div className="relative mx-auto max-w-3xl px-6 text-center">
         <Reveal>
           <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">
-            // Ship it
+            {"// Ship it"}
           </span>
         </Reveal>
 
