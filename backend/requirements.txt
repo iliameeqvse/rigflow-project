@@ -27,4 +27,5 @@ whitenoise==6.7.0
 trimesh==4.4.9
 numpy==1.26.4
 gunicorn==23.0.0
-sentry-sdk==2.14.0
+sentry-sdk==2.14.0anthropic>=0.40.0
+Pillow>=10.0.0
