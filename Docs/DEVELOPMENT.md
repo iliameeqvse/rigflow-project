@@ -10,7 +10,7 @@ How to get RigFlow running on a fresh machine and where to look when something i
 |---|---|---|
 | Python | 3.11+ | Django 5.1 needs ≥ 3.10 |
 | Node.js | 20+ | Next.js 16 |
-| Blender | 3.6 LTS or 4.x | Needed for real rigging. If missing, the pipeline silently falls back to a passthrough copy — see [Blender fallback](#blender-fallback) below. |
+| Blender | 3.6 LTS or 4.x | Required for real rigging. If missing or broken, the row is marked `failed` with a specific `error_message` — there is no passthrough fallback. See [Blender failures](#blender-failures) below. |
 | Docker + Compose | recent | Optional — only for full-stack local runs |
 
 You don't need Postgres or Redis locally — `local.py` uses SQLite and runs Celery in eager (in-process) mode.
@@ -21,7 +21,7 @@ You don't need Postgres or Redis locally — `local.py` uses SQLite and runs Cel
 cd backend/
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install -r requirements.txt      # NOT the one at the repo root — that is an SSH key (see KNOWN_ISSUES)
+pip install -r requirements.txt      # backend/requirements.txt — the real deps
 python manage.py migrate
 python manage.py createsuperuser
 python manage.py runserver           # http://localhost:8000
@@ -156,8 +156,8 @@ For the full endpoint surface see [API](API.md).
 
 | Symptom | First thing to check |
 |---|---|
-| `git status` shows every file as deleted | You are at the wrong root. `cd rigflow-project/`. See [KNOWN_ISSUES § Repo layout](KNOWN_ISSUES.md#repo-layout). |
-| `pip install -r requirements.txt` fails with parse errors | You ran it at the repo root. That file is an SSH private key. Use `backend/requirements.txt`. |
+| `git status` errors with "packfile does not match index" / "bad object HEAD" | You are at the outer (corrupted) git. `cd rigflow-project/` to reach the inner working repo. See [KNOWN_ISSUES § Repo layout](KNOWN_ISSUES.md#repo-layout). |
+| `git status` shows every file as deleted | You are still at the outer folder, just without errors yet. Same fix — `cd rigflow-project/`. |
 | Upload returns 429 immediately | Either you're unauthenticated (`anon_upload = 0/min`) or you've blown the 10/hour `rig_upload` cap. |
 | Rig marked `failed` with "Blender executable not found…" | `BLENDER_PATH` not visible to the Django process. `export BLENDER_PATH=/path/to/blender` and restart the server. |
 | Rig marked `failed` with "Blender exited with code <n>" | Rigify or pipeline error — open the rig in admin and read `rig_log`. |

@@ -33,28 +33,29 @@ A quick-reference card. For the system architecture in depth, read [ARCHITECTURE
 ## Repo layout (source root)
 
 ```
-rigflow-project/                 ← git root
+rigflow-project/                 ← outer folder; old leftover .git here is corrupted, ignore it
 ├── CLAUDE.md                    ← agent instructions (terse; this folder is the long-form version)
-├── rigflow-project/             ← actual source root — `cd` here
+├── rigflow-project/             ← actual source root + the working .git — `cd` here
+│   ├── .git/                    ← branch Feature/test
 │   ├── Docs/                    ← you are here
 │   ├── backend/
 │   │   ├── apps/                rigging, animations, users, payments, projects, posts, throttles
 │   │   ├── rigflow/             settings (base, local, production), urls, asgi, celery, wsgi
-│   │   ├── scripts/blender_autorig.py
+│   │   ├── scripts/blender_autorig.py, _test_landmark_promotion.py
 │   │   ├── manage.py
-│   │   └── requirements.txt     ← real Python deps (NOT the one at the repo root)
+│   │   └── requirements.txt     ← real Python deps
 │   ├── frontend/
 │   │   └── src/{app, components, hooks, lib}/
-│   ├── docker/{docker-compose.yml, nginx.conf}
-│   └── requirements.txt         ← SSH private key (!) — see KNOWN_ISSUES
-└── ...
+│   └── docker/{docker-compose.yml, nginx.conf}
 ```
+
+The historical SSH-private-key file at the repo root has been removed — see [KNOWN_ISSUES](KNOWN_ISSUES.md).
 
 ## Local conventions
 
 - `manage.py` and `rigflow/celery.py` default to `DJANGO_SETTINGS_MODULE=rigflow.settings.local`.
 - Local settings set `CELERY_TASK_ALWAYS_EAGER = True` so Celery tasks run synchronously without a worker.
-- `BLENDER_PATH` defaults to `/usr/bin/blender`. If absent, the rigging task falls back to a passthrough copy (intentional, but masks failures — see [KNOWN_ISSUES § Blender fallback hides failures](KNOWN_ISSUES.md#blender-fallback-hides-failures)).
+- `BLENDER_PATH` defaults to `/usr/bin/blender`. If the binary is missing, errors, or produces no GLB, the rig row is marked `failed` with a specific `error_message` — there is no longer a passthrough fallback. See [KNOWN_ISSUES § Blender failures mark the row `failed`](KNOWN_ISSUES.md#blender-failures-mark-the-row-failed-no-more-silent-passthrough).
 - Frontend stores `access` / `refresh` / `user` in `localStorage` and auto-refreshes on 401.
 
 ## Where to look first

@@ -4,13 +4,13 @@ Things that look broken but aren't, things that *are*, and history that explains
 
 ## Repo layout
 
-> **Source actually lives one directory deeper than the git root.**
+> **Two `.git` directories exist; only the inner one works.**
 
-The git root is `rigflow-project/`. Source lives at `rigflow-project/rigflow-project/{backend,frontend,docker,Docs}/`.
+The git root **for normal use** is `rigflow-project/rigflow-project/` — the inner folder, alongside `backend/`, `frontend/`, `docker/`, and `Docs/`. Currently on branch `Feature/test`.
 
-`git status` from the git root shows every tracked file as **deleted** — paths like `backend/...` look gone — because the working tree was moved into the nested folder without a matching commit. This is harmless if you know about it, deeply confusing otherwise.
+There is also a `.git` at the outer `rigflow-project/` level, leftover from the original clone. It is **corrupted** — broken packfile, unreachable HEAD pointing at `21fc31a78…`, dozens of `tmp_pack_*` files in `.git/objects/pack/`. Any `git` command run from the outer folder hits this corrupted repo and prints "packfile does not match index" / "bad object HEAD". Do not try to recover it in place; if you need its history, do a fresh clone of the GitHub remote into a sibling folder.
 
-**Always `cd rigflow-project/` first** before running any of the commands in [DEVELOPMENT](DEVELOPMENT.md).
+**Always `cd rigflow-project/rigflow-project/` first** before running any of the commands in [DEVELOPMENT](DEVELOPMENT.md). All paths in these docs assume that working directory.
 
 ## ~~`requirements.txt` at the repo root is an SSH private key~~ (removed)
 
@@ -62,11 +62,21 @@ Symptom if you ever set `NEXT_PUBLIC_WS_URL` without first wiring up Channels: e
 
 > **Action item**: add `apps/rigging/consumers.py`, wrap `rigflow.asgi.application` in a `ProtocolTypeRouter`, and only then re-set `NEXT_PUBLIC_WS_URL`. See [ARCHITECTURE § Real-time updates](ARCHITECTURE.md#real-time-updates).
 
+## Landmark schema is now 14 keys, not 6
+
+Earlier code accepted a 6-key landmark dict (`chin`, `groin`, `left_wrist`, `right_wrist`, `left_ankle`, `right_ankle`). The current pipeline works in **14 keys** — the same 6 plus `left_shoulder` / `right_shoulder` / `left_elbow` / `right_elbow` / `left_hip` / `right_hip` / `left_knee` / `right_knee`. The full list is in `LANDMARK_KEYS` in both `backend/scripts/blender_autorig.py` and `backend/apps/rigging/views.py`.
+
+Implications:
+
+- `POST /rigs/{id}/rerig-landmarks/` requires all 14 keys; missing any is a `400`.
+- `RiggedModel.landmarks` (JSON field, added in migration `0003_riggedmodel_landmarks`) holds the 14-key dict in **three.js editor frame** coords (Y-up; mesh normalized to ~2 units tall).
+- `_promote_legacy_landmarks` in the autorig script still upgrades a 6-key dict to 14 internally (used by the auto-detect seed and by the standalone test in `backend/scripts/_test_landmark_promotion.py`), so old code that only knows about the 6 keys can still be adapted server-side — but the public API is 14-only.
+
+If you ever see the script being called with `detect_landmarks(meshes, pose=...)` *without* `reference_height=...`, that's a regression — bones will be scaled against the live mesh AABB (which props inflate) instead of the metarig height, producing skeletons that visibly extend past the model's hands / feet / head. Both call sites in `main()` must pass `reference_height=mesh_h` where `mesh_h = armature_aabb(metarig)["size"].z`.
+
 ## CLAUDE.md drift
 
-The top-level `CLAUDE.md` (project instructions for the Claude Code agent) describes the rigging endpoints as calling `_run_rig_pipeline` **inline in the request thread**. The current code calls `auto_rig_model.delay(...)` (Celery). Local has `CELERY_TASK_ALWAYS_EAGER=True` so the practical effect is identical, but in Docker/production the work is queued.
-
-`CLAUDE.md` is intentionally terse and slightly behind the code in places. Treat the source as authoritative.
+The top-level `CLAUDE.md` is intentionally terse and tries to track the source. If you spot a place where it disagrees with the actual code (or with this doc), fix `CLAUDE.md` — but treat the source as authoritative when in doubt.
 
 ## Public, unthrottled `/rigs/{id}/status/`
 

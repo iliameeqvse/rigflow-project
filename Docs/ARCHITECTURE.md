@@ -77,13 +77,14 @@ file_size_mb         float
 rigged_glb           FileField   (output)
 preview_thumbnail    ImageField  (output)
 bone_mapping         JSON        (Rigify→Mixamo name map, written by Blender)
-bone_corrections     JSON        (user-supplied landmarks for rerig)
+bone_corrections     JSON        (last user-submitted landmarks payload from /rerig-landmarks/)
+landmarks            JSON        (14-key auto-detected landmarks in three.js space; served via /rigs/{id}/landmarks/)
 detected_pose        "t_pose" | "a_pose" | "arms_down" | "unclear"
-pose_angle_deg       float
-pose_confidence      float
+pose_angle_deg       float       (arm tilt from horizontal, see RIGGING_PIPELINE § Pose detection)
+pose_confidence      float       ∈ [0, 1]
 status               "pending" | "processing" | "done" | "failed"
 celery_task_id       char(255)
-rig_log              text        (Blender stdout)
+rig_log              text        (Blender stdout, last 8000 chars)
 error_message        text
 processing_time_s    float
 created_at, updated_at
