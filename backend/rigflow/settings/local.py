@@ -1,6 +1,16 @@
 import os
 import shutil
+from pathlib import Path
 from .base import *
+
+# Load backend/.env into os.environ if the file exists.
+# django-environ is already in requirements; this lets you drop
+# ANTHROPIC_API_KEY / LANDMARK_VISION_PROVIDER there without
+# having to export them in every terminal session.
+_env_file = Path(__file__).resolve().parents[2] / ".env"
+if _env_file.exists():
+    import environ
+    environ.Env.read_env(_env_file)
 
 
 DEBUG = True
