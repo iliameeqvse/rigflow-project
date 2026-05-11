@@ -50,6 +50,30 @@ class RiggedModel(models.Model):
         ),
     )
 
+    # Vision-assisted auto-rig audit fields
+    DETECTION_GEOMETRY       = "geometry"
+    DETECTION_LLM_VISION     = "llm_vision"
+    DETECTION_USER_LANDMARKS = "user_landmarks"
+    DETECTION_FAILED         = "failed"
+    DETECTION_METHOD_CHOICES = [
+        ("geometry",       "Geometry only"),
+        ("llm_vision",     "LLM vision + geometry refine"),
+        ("user_landmarks", "User-supplied landmarks"),
+        ("failed",         "AI + geometry both failed; AABB defaults used"),
+    ]
+    detection_method = models.CharField(
+        max_length=24, choices=DETECTION_METHOD_CHOICES,
+        default="geometry", db_index=True,
+        help_text="Which path produced the landmarks attached to this rig.",
+    )
+    vision_response_raw = models.JSONField(
+        null=True, blank=True,
+        help_text=(
+            "Raw validated response from the LLM vision provider, kept for "
+            "debugging and audit. Null when detection_method is not 'llm_vision'."
+        ),
+    )
+
     # Stats
     vertex_count = models.IntegerField(default=0)
     bone_count   = models.IntegerField(default=0)
