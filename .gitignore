@@ -1,0 +1,66 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.mo
+
+# ── Django ────────────────────────────────────────────────────────────────────
+db.sqlite3
+db.sqlite3-journal
+*.log
+local_settings.py
+
+# Media uploads — never commit user files or generated GLBs
+backend/media/rigs/
+backend/media/animations/
+
+# ── Environment & secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pub
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# ── Docker volumes / ephemeral ────────────────────────────────────────────────
+docker/postgres-data/
+docker/redis-data/
+
+# ── OS & editors ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Blender temp files ────────────────────────────────────────────────────────
+*.blend1
+*.blend2
+
+# ── Test / coverage artefacts ─────────────────────────────────────────────────
+.tox/
+.nox/
+coverage.xml
+*.cover
