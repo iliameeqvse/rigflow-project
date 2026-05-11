@@ -64,6 +64,18 @@ def parse_args():
     # Manual preview-space Euler rotation in degrees. The upload preview runs
     # in three.js Y-up; after step 1 we convert those axes back into Blender's
     # Z-up space and trust the user's orientation over auto detection.
+    p.add_argument("--render-ortho-views", action="store_true",
+                   help="Render 4 ortho PNGs and write --ai-request-out JSON, then exit. "
+                        "Used by the Django round-trip before calling the vision provider.")
+    p.add_argument("--ai-request-out", default=None,
+                   help="Path to write the AI request JSON (PNG paths + mesh metadata).")
+    p.add_argument("--ortho-render-dir", default=None,
+                   help="Directory to write the 4 ortho PNGs into. "
+                        "Defaults to the directory containing --ai-request-out.")
+    p.add_argument("--landmarks-from-ai", default=None,
+                   help="Path to AI vision response JSON. When set, Blender raycasts "
+                        "pixel coords into 3D seeds and uses them for landmark placement. "
+                        "Wired up fully in M4; stub in M2.")
     p.add_argument("--initial-rotation-x", type=float, default=0.0)
     p.add_argument("--initial-rotation-y", type=float, default=0.0)
     p.add_argument("--initial-rotation-z", type=float, default=0.0)
@@ -180,6 +192,16 @@ def armature_aabb(arm):
         pts.append(arm.matrix_world @ b.head_local)
         pts.append(arm.matrix_world @ b.tail_local)
     return aabb(pts)
+
+
+def _bbox_world(mesh):
+    """[[xmin,ymin,zmin],[xmax,ymax,zmax]] for a single mesh in world space."""
+    pts = [mesh.matrix_world @ v.co for v in mesh.data.vertices]
+    if not pts:
+        return [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+    b = aabb(pts)
+    mn, mx = b["min"], b["max"]
+    return [[mn.x, mn.y, mn.z], [mx.x, mx.y, mx.z]]
 
 
 # ---------------------------------------------------------------------------
@@ -1189,6 +1211,99 @@ def build_bone_map(rig):
 
 
 # ---------------------------------------------------------------------------
+# Ortho rendering (Task 8 — vision round-trip phase 1)
+# ---------------------------------------------------------------------------
+
+def render_ortho_views(meshes, out_dir, image_size=512):
+    """Render front/back/left/right ortho PNGs; return views dict."""
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    b = aabb(world_vertices(meshes))
+    mn, mx = b["min"], b["max"]
+    cx = (mn.x + mx.x) / 2
+    cy = (mn.y + mx.y) / 2
+    cz = (mn.z + mx.z) / 2
+    xsize = mx.x - mn.x
+    ysize = mx.y - mn.y
+    zsize = mx.z - mn.z
+    dist = max(xsize, ysize, zsize) * 3 + 1.0
+
+    # Each view sees a different pair of world axes; pad 15% so mesh doesn't
+    # touch the image border.
+    fb_scale = max(xsize, zsize) * 1.15   # front/back: X × Z plane
+    lr_scale = max(ysize, zsize) * 1.15   # left/right: Y × Z plane
+
+    view_specs = {
+        "front": (Vector((cx, mn.y - dist, cz)), fb_scale),
+        "back":  (Vector((cx, mx.y + dist, cz)), fb_scale),
+        "left":  (Vector((mn.x - dist, cy, cz)), lr_scale),
+        "right": (Vector((mx.x + dist, cy, cz)), lr_scale),
+    }
+    target = Vector((cx, cy, cz))
+
+    scene = bpy.context.scene
+    # CYCLES is the reliable headless choice — it doesn't need an EGL/GLX
+    # context. EEVEE variants are tried as fallbacks when OpenGL is available.
+    for eng in ("CYCLES", "BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"):
+        try:
+            scene.render.engine = eng
+            break
+        except Exception:
+            continue
+    if scene.render.engine == "CYCLES":
+        scene.cycles.samples = 4       # minimal; enough for landmark detection
+        scene.cycles.use_denoising = False
+        try:
+            scene.cycles.device = "CPU"
+        except Exception:
+            pass
+
+    scene.render.resolution_x = image_size
+    scene.render.resolution_y = image_size
+    scene.render.resolution_percentage = 100
+    scene.render.image_settings.file_format = "PNG"
+
+    if not any(o.type == "LIGHT" for o in bpy.data.objects):
+        sun_data = bpy.data.lights.new("sun", "SUN")
+        sun_data.energy = 3.0
+        sun_obj = bpy.data.objects.new("sun", sun_data)
+        scene.collection.objects.link(sun_obj)
+        sun_obj.location = Vector((cx, cy, cz + dist))
+
+    views = {}
+    for name, (loc, scale) in view_specs.items():
+        cam_data = bpy.data.cameras.new(f"cam_{name}")
+        cam_data.type = "ORTHO"
+        cam_data.ortho_scale = max(scale, 0.01)
+        cam_obj = bpy.data.objects.new(f"cam_{name}", cam_data)
+        scene.collection.objects.link(cam_obj)
+
+        cam_obj.location = loc
+        rot_quat = (target - loc).to_track_quat("-Z", "Z")
+        cam_obj.rotation_euler = rot_quat.to_euler()
+
+        scene.camera = cam_obj
+        png_path = str(out_path / f"{name}.png")
+        scene.render.filepath = png_path
+        bpy.ops.render.render(write_still=True)
+
+        views[name] = {
+            "path": png_path,
+            "image_size": [image_size, image_size],
+            "ortho_scale": cam_data.ortho_scale,
+            "camera_world_pos": [loc.x, loc.y, loc.z],
+            "look_at": [target.x, target.y, target.z],
+        }
+        log(f"Rendered {name} → {png_path}")
+
+        bpy.data.objects.remove(cam_obj, do_unlink=True)
+        bpy.data.cameras.remove(cam_data)
+
+    return views
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1230,6 +1345,38 @@ def main():
     remove_face_bones(metarig)
 
     scale_mesh_to_metarig(meshes, metarig)
+
+    # Ortho-render early-exit: phase 1 of the vision round-trip. Renders 4
+    # PNGs, writes ai_request.json, then exits — Django calls the vision
+    # provider and re-invokes Blender with --landmarks-from-ai for phase 2.
+    if args.render_ortho_views:
+        if not args.ai_request_out:
+            log("ERROR: --render-ortho-views requires --ai-request-out")
+            sys.exit(1)
+        render_dir = args.ortho_render_dir or str(Path(args.ai_request_out).parent)
+        views = render_ortho_views(meshes, render_dir)
+        b_all = aabb(world_vertices(meshes))
+        mn_all, mx_all = b_all["min"], b_all["max"]
+        ai_request = {
+            "rig_id": Path(args.input).stem,
+            "views": views,
+            "mesh_objects": [
+                {
+                    "name": m.name,
+                    "vertex_count": len(m.data.vertices),
+                    "bbox_world": _bbox_world(m),
+                }
+                for m in meshes
+            ],
+            "world_aabb": [
+                [mn_all.x, mn_all.y, mn_all.z],
+                [mx_all.x, mx_all.y, mx_all.z],
+            ],
+        }
+        Path(args.ai_request_out).write_text(json.dumps(ai_request, indent=2))
+        log(f"Wrote AI request JSON → {args.ai_request_out}")
+        log("Phase 1 complete — exiting for vision provider call.")
+        sys.exit(0)
 
     # Pose classification — runs after scaling so the chest/shoulder bands
     # are at predictable Z fractions of body height. Result is logged and
