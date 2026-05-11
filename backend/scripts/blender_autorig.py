@@ -689,6 +689,24 @@ def _vec(xyz):
         return type(xyz)(xyz) if isinstance(xyz, tuple) else xyz
 
 
+def _nudge_if_collinear(a, mid, b, y_nudge):
+    """If a→mid→b are collinear in the XZ plane, nudge mid in Y by y_nudge.
+
+    AI-derived landmarks from a single ortho view all land at the same Y
+    depth (the mesh surface), so shoulder/elbow/wrist and hip/knee/ankle
+    are often perfectly collinear. Rigify needs a small bend to compute
+    bone rolls; without this it raises 'zero length vectors have no valid
+    angle' and crashes during rig generation.
+    """
+    cross_xz = abs(
+        (b.x - a.x) * (mid.z - a.z) - (b.z - a.z) * (mid.x - a.x)
+    )
+    span = max(abs(b.x - a.x), abs(b.z - a.z), 1e-3)
+    if cross_xz < 0.02 * span:
+        return _vec((mid.x, mid.y + y_nudge, mid.z))
+    return mid
+
+
 # ---------------------------------------------------------------------------
 # Landmark detection (T-pose vertex-extremity hybrid — Task 5)
 # ---------------------------------------------------------------------------
@@ -877,6 +895,13 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
     le, re = lmk["left_elbow"], lmk["right_elbow"]
     lh, rh = lmk["left_hip"], lmk["right_hip"]
     lk, rk = lmk["left_knee"], lmk["right_knee"]
+
+    # AI-derived landmarks all share the same Y depth (mesh surface), which
+    # makes limb triples collinear and crashes Rigify bone-roll computation.
+    le = _nudge_if_collinear(ls, le, lw, y_nudge= 0.05)
+    re = _nudge_if_collinear(rs, re, rw, y_nudge= 0.05)
+    lk = _nudge_if_collinear(lh, lk, la, y_nudge=-0.04)
+    rk = _nudge_if_collinear(rh, rk, ra, y_nudge=-0.04)
 
     activate(metarig)
     bpy.ops.object.mode_set(mode="EDIT")
@@ -1304,6 +1329,192 @@ def render_ortho_views(meshes, out_dir, image_size=512):
 
 
 # ---------------------------------------------------------------------------
+# Prop parenting (Task 14)
+# ---------------------------------------------------------------------------
+
+_PROP_BONE_MAP = {
+    "hat":                  "DEF-spine.005",   # head
+    "accessory_held_left":  "DEF-hand.L",
+    "accessory_held_right": "DEF-hand.R",
+    # clothing stays with auto-weights; other = no-op
+}
+
+
+def parent_props_to_bones(meshes, mesh_object_labels, armature):
+    """Pin non-body prop meshes rigidly to a single DEF bone.
+
+    Instead of BONE parenting (which confuses the GLB skin exporter when
+    used alongside skinned meshes), we keep the Armature modifier that
+    bind_auto_weights added and simply replace all vertex group weights
+    with a uniform 1.0 to the target bone.  The result is a rigid prop
+    that follows the bone without distortion, fully compatible with the
+    GLB skin pipeline.
+    """
+    for m in meshes:
+        label = mesh_object_labels.get(m.name)
+        bone_name = _PROP_BONE_MAP.get(label)
+        if not bone_name:
+            continue
+        if bone_name not in armature.data.bones:
+            log(f"Prop {m.name} ({label}): bone {bone_name!r} not found; skipping")
+            continue
+        # Clear all existing vertex groups, add a single group for the
+        # target bone, and assign every vertex to it with weight=1.
+        m.vertex_groups.clear()
+        vg = m.vertex_groups.new(name=bone_name)
+        vg.add(list(range(len(m.data.vertices))), 1.0, "REPLACE")
+        # Ensure an Armature modifier pointing at the rig exists.
+        arm_mod = next((mod for mod in m.modifiers if mod.type == "ARMATURE"), None)
+        if arm_mod is None:
+            arm_mod = m.modifiers.new(name="Armature", type="ARMATURE")
+        arm_mod.object = armature
+        log(f"Pinned {m.name} ({label}) → {bone_name}")
+
+
+# ---------------------------------------------------------------------------
+# Pixel → world raycast (Task 12)
+# ---------------------------------------------------------------------------
+
+def pixel_to_world_ray(view_name, px, py, image_size, ortho_scale, world_aabb):
+    """Return (origin, direction) in world space for a pixel in an ortho view.
+
+    Coordinate convention matches render_ortho_views cameras (to_track_quat
+    with up=+Z):
+      front/back cameras: +X = world +X or -X; +Y = world +Z
+      left/right cameras: +X = world -Y or +Y; +Y = world +Z
+
+    view_name ∈ {"front","back","left","right"}
+    px, py    pixel coords, top-left origin, in [0, image_size)
+    """
+    (mn, mx) = world_aabb
+    cx = (mn[0] + mx[0]) / 2
+    cy = (mn[1] + mx[1]) / 2
+    cz = (mn[2] + mx[2]) / 2
+    # Normalise pixel to camera-plane offset in world units.
+    u = (px / image_size - 0.5) * ortho_scale   # horizontal (+u = image right)
+    v = (0.5 - py / image_size) * ortho_scale   # vertical   (+v = image top)
+
+    if view_name == "front":
+        # Camera at (cx, mn.y−dist, cz) looking toward +Y.
+        # Camera +X = world +X, camera +Y = world +Z.
+        origin    = Vector((cx + u, mn[1] - ortho_scale / 2, cz + v))
+        direction = Vector((0.0, 1.0, 0.0))
+
+    elif view_name == "back":
+        # Camera at (cx, mx.y+dist, cz) looking toward -Y.
+        # Camera +X = world -X (mirrored), camera +Y = world +Z.
+        origin    = Vector((cx - u, mx[1] + ortho_scale / 2, cz + v))
+        direction = Vector((0.0, -1.0, 0.0))
+
+    elif view_name == "left":
+        # Camera at (mn.x−dist, cy, cz) looking toward +X.
+        # Camera +X = world -Y, camera +Y = world +Z.
+        origin    = Vector((mn[0] - ortho_scale / 2, cy - u, cz + v))
+        direction = Vector((1.0, 0.0, 0.0))
+
+    elif view_name == "right":
+        # Camera at (mx.x+dist, cy, cz) looking toward -X.
+        # Camera +X = world +Y, camera +Y = world +Z.
+        origin    = Vector((mx[0] + ortho_scale / 2, cy + u, cz + v))
+        direction = Vector((-1.0, 0.0, 0.0))
+
+    else:
+        raise ValueError(f"unknown view {view_name!r}")
+
+    return origin, direction
+
+
+def _bvh_tree_for(mesh):
+    from mathutils.bvhtree import BVHTree
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    return BVHTree.FromObject(mesh, depsgraph)
+
+
+def ai_pixels_to_world_seeds(ai_response, image_size, ortho_scale, world_aabb, meshes):
+    """For each of the 14 landmark keys, triangulate front + side pixel coords
+    into a 3D world-space seed via BVH raycasting.
+
+    front view provides x and z; side view provides y.
+    """
+    bvh_trees = [(m, _bvh_tree_for(m)) for m in meshes]
+
+    def raycast(origin, direction):
+        best = None
+        for m, tree in bvh_trees:
+            loc, _, _, dist = tree.ray_cast(origin, direction)
+            if loc is not None and (best is None or dist < best[1]):
+                best = (loc, dist)
+        return best[0] if best else None
+
+    seeds = {}
+    for key in LANDMARK_KEYS:
+        front_px = (ai_response["landmarks"].get("front") or {}).get(key)
+        if front_px is None:
+            continue
+
+        fo, fd = pixel_to_world_ray("front", front_px[0], front_px[1],
+                                    image_size, ortho_scale, world_aabb)
+        hit_f = raycast(fo, fd)
+        if hit_f is None:
+            # Fallback: mid-plane hit estimate.
+            mn, mx = world_aabb
+            t = ((mn[1] + mx[1]) / 2 - fo.y) / (fd.y or 1e-6)
+            hit_f = Vector((fo.x + fd.x * t, fo.y + fd.y * t, fo.z + fd.z * t))
+
+        # Try left view first for the Y coordinate; fall back to right.
+        side_name = None
+        side_px = None
+        for vn in ("left", "right"):
+            sp = (ai_response["landmarks"].get(vn) or {}).get(key)
+            if sp is not None:
+                side_name, side_px = vn, sp
+                break
+
+        if side_px is not None:
+            so, sd = pixel_to_world_ray(side_name, side_px[0], side_px[1],
+                                        image_size, ortho_scale, world_aabb)
+            hit_s = raycast(so, sd) or hit_f
+            # Merge: front gives x,z; side gives y; average z for stability.
+            seed = Vector((hit_f.x, hit_s.y, (hit_f.z + hit_s.z) / 2))
+        else:
+            seed = hit_f
+
+        seeds[key] = seed
+
+    return seeds
+
+
+def refine_seeds(seeds, meshes):
+    """Walk AI seeds to the nearest anatomically-plausible mesh vertex."""
+    refined = dict(seeds)
+    verts = world_vertices(meshes)
+
+    for key in ("left_wrist", "right_wrist"):
+        if key not in seeds:
+            continue
+        seed = seeds[key]
+        candidates = [v for v in verts
+                      if abs(v.z - seed.z) < 0.12 and (v - seed).length < 0.22]
+        if candidates:
+            refined[key] = min(candidates, key=lambda v: (v - seed).length)
+
+    for key in ("left_ankle", "right_ankle"):
+        if key not in seeds:
+            continue
+        sign = +1 if key.startswith("left") else -1
+        bottom = sorted(verts, key=lambda v: v.z)[: max(50, len(verts) // 100)]
+        side_bottom = [v for v in bottom if (v.x * sign) > 0]
+        if side_bottom:
+            n = len(side_bottom)
+            cx = sum(v.x for v in side_bottom) / n
+            cy2 = sum(v.y for v in side_bottom) / n
+            cz2 = sum(v.z for v in side_bottom) / n
+            refined[key] = Vector((cx, cy2, cz2))
+
+    return refined
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1418,10 +1629,58 @@ def main():
         Path(args.landmarks_out).write_text(json.dumps(detected, indent=2))
         log(f"Wrote {len(detected)} detected landmarks → {args.landmarks_out}")
 
+    # Capture labels for prop parenting when --landmarks-from-ai is used.
+    mesh_object_labels: dict = {}
+
     if args.landmarks:
         user_landmarks = json.loads(args.landmarks)
         log(f"Mode: LANDMARK (user-supplied {len(user_landmarks)} keys)")
         place_bones_from_landmarks(metarig, user_landmarks, mesh_h)
+    elif args.landmarks_from_ai:
+        # Phase 2 of the vision round-trip: pixel coords → 3D seeds → refine.
+        ai_response = json.loads(Path(args.landmarks_from_ai).read_text())
+        mesh_object_labels = ai_response.get("mesh_objects", {})
+        log(f"Mode: AI (reading {args.landmarks_from_ai})")
+
+        b_cur = aabb(world_vertices(meshes))
+        mn_cur, mx_cur = b_cur["min"], b_cur["max"]
+        xsize = mx_cur.x - mn_cur.x
+        zsize = mx_cur.z - mn_cur.z
+        os_approx = max(xsize, zsize) * 1.15
+        world_aabb_t = (
+            (mn_cur.x, mn_cur.y, mn_cur.z),
+            (mx_cur.x, mx_cur.y, mx_cur.z),
+        )
+
+        try:
+            seeds = ai_pixels_to_world_seeds(
+                ai_response, 512, os_approx, world_aabb_t, meshes
+            )
+            seeds = refine_seeds(seeds, meshes)
+            log(f"AI seeds resolved: {len(seeds)} of {len(LANDMARK_KEYS)} landmarks")
+        except Exception as e:
+            log(f"Raycast failed ({e}); falling back to geometry-only landmarks")
+            seeds = {}
+
+        # Geometry fallback for any key the AI didn't supply.
+        geo_landmarks = detect_landmarks(meshes, pose=detected_pose, reference_height=mesh_h)
+
+        def to_three_from_blender(bv):
+            s = 2.0 / mesh_h
+            return (bv.x * s, bv.z * s, -bv.y * s)
+
+        final_landmarks = {}
+        for k in LANDMARK_KEYS:
+            if k in seeds:
+                final_landmarks[k] = to_three_from_blender(seeds[k])
+            else:
+                final_landmarks[k] = geo_landmarks[k]
+
+        if args.landmarks_out:
+            Path(args.landmarks_out).write_text(json.dumps(final_landmarks, indent=2))
+            log(f"Wrote {len(final_landmarks)} AI+refined landmarks → {args.landmarks_out}")
+
+        place_bones_from_landmarks(metarig, final_landmarks, mesh_h)
     else:
         auto_landmarks = detect_landmarks(meshes, pose=detected_pose, reference_height=mesh_h)
         log(f"Mode: AUTO (detected {len(auto_landmarks)} landmarks)")
@@ -1430,15 +1689,9 @@ def main():
     rig = generate_rig(metarig)
 
     # Bind with the FULL Rigify rig — heat-diffusion auto-weights need the
-    # complete bone graph to produce smooth weights. Rigify tags only DEF
-    # bones use_deform=True, so weights land on DEF bones regardless.
+    # complete bone graph to produce smooth weights.
     bind_auto_weights(meshes, rig)
 
-    # Catch any vertex the heat-diffusion algorithm couldn't reach.
-    # Without this, those vertices have weight=0 and render collapsed at
-    # origin once the rig animates ("two dots moving" symptom). Guarded
-    # so a failure here can't kill the rest of the pipeline — without
-    # it the rig still exports, just with the orphan-vertex bug.
     try:
         patch_orphan_vertex_weights(meshes, rig)
     except Exception as e:
@@ -1446,12 +1699,14 @@ def main():
         import traceback
         log(traceback.format_exc())
 
-    # Now that weights are baked into vertex groups (keyed by bone name),
-    # prune to a clean DEF-only skeleton for retargeting.
     strip_to_deform_bones(rig)
 
-    # Metarig stays in the scene but isn't selected; export uses use_selection
-    # so it can't leak into the GLB.
+    # Prop parenting: non-body meshes get parented to semantically-correct
+    # DEF bones when the AI supplied mesh_object_labels.
+    if mesh_object_labels:
+        parent_props_to_bones(meshes, mesh_object_labels, rig)
+
+    # Metarig stays in the scene but isn't selected; export uses use_selection.
     export_glb(meshes, rig, args.output)
 
     bone_map = build_bone_map(rig)
