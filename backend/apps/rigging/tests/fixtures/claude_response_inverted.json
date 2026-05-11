@@ -1,0 +1,72 @@
+{
+  "landmarks": {
+    "front": {
+      "chin":           [256, 490],
+      "groin":          [256,  56],
+      "left_shoulder":  [310, 420],
+      "right_shoulder": [202, 420],
+      "left_elbow":     [375, 340],
+      "right_elbow":    [137, 340],
+      "left_wrist":     [450, 270],
+      "right_wrist":    [ 62, 270],
+      "left_hip":       [285, 240],
+      "right_hip":      [227, 240],
+      "left_knee":      [290, 160],
+      "right_knee":     [222, 160],
+      "left_ankle":     [290,  80],
+      "right_ankle":    [222,  80]
+    },
+    "back": {
+      "chin":           [256, 490],
+      "groin":          [256,  56],
+      "left_shoulder":  [202, 420],
+      "right_shoulder": [310, 420],
+      "left_elbow":     [137, 340],
+      "right_elbow":    [375, 340],
+      "left_wrist":     [ 62, 270],
+      "right_wrist":    [450, 270],
+      "left_hip":       [227, 240],
+      "right_hip":      [285, 240],
+      "left_knee":      [222, 160],
+      "right_knee":     [290, 160],
+      "left_ankle":     [222,  80],
+      "right_ankle":    [290,  80]
+    },
+    "left": {
+      "chin":           [256, 490],
+      "groin":          [256,  56],
+      "left_shoulder":  [256, 420],
+      "right_shoulder": null,
+      "left_elbow":     [256, 340],
+      "right_elbow":    null,
+      "left_wrist":     [256, 270],
+      "right_wrist":    null,
+      "left_hip":       [256, 240],
+      "right_hip":      null,
+      "left_knee":      [256, 160],
+      "right_knee":     null,
+      "left_ankle":     [256,  80],
+      "right_ankle":    null
+    },
+    "right": {
+      "chin":           [256, 490],
+      "groin":          [256,  56],
+      "left_shoulder":  null,
+      "right_shoulder": [256, 420],
+      "left_elbow":     null,
+      "right_elbow":    [256, 340],
+      "left_wrist":     null,
+      "right_wrist":    [256, 270],
+      "left_hip":       null,
+      "right_hip":      [256, 240],
+      "left_knee":      null,
+      "right_knee":     [256, 160],
+      "left_ankle":     null,
+      "right_ankle":    [256,  80]
+    }
+  },
+  "mesh_objects": {
+    "Object_3": "body"
+  },
+  "notes": "Intentionally inverted — groin above chin — for sanity-cascade testing"
+}

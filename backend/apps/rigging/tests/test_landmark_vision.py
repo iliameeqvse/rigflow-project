@@ -1,4 +1,4 @@
-"""Tests for provider dispatch and response parsing. Live SDK calls are not made."""
+"""Tests for provider dispatch, response parsing, and sanity cascade."""
 import json
 import os
 from pathlib import Path
@@ -76,4 +76,51 @@ class ClaudeProviderParseTests(SimpleTestCase):
         wrapped = f"```json\n{inner}\n```"
         result = self._provider()._parse(wrapped)
         self.assertIsNotNone(result)
+
+
+class SanityCascadeTests(SimpleTestCase):
+    """Unit tests for the sanity.check_landmarks logic used in the cascade."""
+
+    _AABB = ((-2.0, -0.5, -2.0), (2.0, 2.5, 2.0))
+
+    def _good_landmarks(self):
+        return json.loads((FIXTURES / "claude_response_johnny.json").read_text())
+
+    def test_inverted_fixture_fails_sanity(self):
+        from apps.rigging.sanity import check_landmarks
+        # The inverted fixture has groin above chin in pixel space, which
+        # maps to groin having a HIGHER Y (closer to top of image = lower
+        # world position in three.js, so inverted means groin.y > chin.y).
+        raw = json.loads((FIXTURES / "claude_response_inverted.json").read_text())
+        # Build a minimal three.js-space landmark dict from pixel coords:
+        # pixel top of image → high Y (three.js Y=0..2 bottom-to-top).
+        # In the inverted fixture, chin pixel y=490 (bottom) → low world Y,
+        # groin pixel y=56 (top) → high world Y → groin.y > chin.y → FAIL.
+        image_size = 512
+        def px_to_y(py):
+            return (1.0 - py / image_size) * 2.0   # three.js Y-up, 0-2 range
+
+        front = raw["landmarks"]["front"]
+        lm = {}
+        for k, v in front.items():
+            if v is not None:
+                lm[k] = (v[0] / image_size * 2 - 1, px_to_y(v[1]), 0.0)
+        sr = check_landmarks(lm, world_aabb=self._AABB)
+        self.assertFalse(sr.ok)
+        codes = {f.code for f in sr.failures}
+        self.assertIn("groin_above_chin", codes)
+
+    def test_good_fixture_passes_sanity(self):
+        from apps.rigging.sanity import check_landmarks
+        raw = json.loads((FIXTURES / "claude_response_johnny.json").read_text())
+        image_size = 512
+        def px_to_y(py):
+            return (1.0 - py / image_size) * 2.0
+        front = raw["landmarks"]["front"]
+        lm = {}
+        for k, v in front.items():
+            if v is not None:
+                lm[k] = (v[0] / image_size * 2 - 1, px_to_y(v[1]), 0.0)
+        sr = check_landmarks(lm, world_aabb=self._AABB)
+        self.assertTrue(sr.ok, f"Unexpected failures: {sr.failures}")
 

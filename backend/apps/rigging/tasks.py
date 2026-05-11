@@ -197,6 +197,73 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                 logger.error("Rig failed %s: %s", rig_id, failure_reason)
                 return {"status": "failed", "rig_id": rig_id}
 
+            # --- Sanity-check cascade ---
+            # Validate the landmarks Blender wrote.  When AI seeds fail the
+            # anatomical rules, re-run geometry-only so the rig is still
+            # valid.  Failures cascade: AI → geometry → AABB defaults (always
+            # produces a done rig, never a hard failure).
+            _LOOSE_AABB = ((-2.0, -0.5, -2.0), (2.0, 2.5, 2.0))
+
+            if landmarks_path.exists():
+                from .sanity import check_landmarks
+                _candidate = json.loads(landmarks_path.read_text())
+                _sr = check_landmarks(_candidate, world_aabb=_LOOSE_AABB)
+
+                if not _sr.ok and ai_response_path is not None:
+                    logger.warning(
+                        "AI landmark sanity failed for rig %s (%s); running geometry fallback",
+                        rig_id, [f.code for f in _sr.failures],
+                    )
+                    push_ws(user_id, {"rig_id": rig_id,
+                                      "step": "AI landmarks failed; re-running geometry…",
+                                      "pct": 65})
+
+                    _geo_glb   = tmp / "rigged_geo.glb"
+                    _geo_bones = tmp / "bones_geo.json"
+                    _geo_lm    = tmp / "landmarks_geo.json"
+                    _geo_pose  = tmp / "pose_geo.json"
+                    _geo_cmd   = [
+                        blender_path, "--background", "--python", str(script_path), "--",
+                        "--input",         str(input_path),
+                        "--output",        str(_geo_glb),
+                        "--bones",         str(_geo_bones),
+                        "--landmarks-out", str(_geo_lm),
+                        "--pose",          str(_geo_pose),
+                        "--format",        rig.original_format,
+                    ]
+                    for _a in (extra_args or []):
+                        if _a.startswith("--initial-rotation"):
+                            _geo_cmd.append(_a)
+
+                    try:
+                        _rc_g, _out_g, _err_g = _blender_call(_geo_cmd, timeout=600, cwd=cwd)
+                        rig.rig_log += f"\n[GEO FALLBACK] {_out_g[-4000:]}"
+                        if _rc_g == 0 and _geo_glb.exists():
+                            glb_output     = _geo_glb
+                            bone_data_path = _geo_bones
+                            landmarks_path = _geo_lm
+                            pose_data_path = _geo_pose
+                            if _geo_lm.exists():
+                                _candidate_g = json.loads(_geo_lm.read_text())
+                                _sr_g = check_landmarks(_candidate_g, world_aabb=_LOOSE_AABB)
+                                rig.detection_method = (
+                                    "geometry" if _sr_g.ok else "failed"
+                                )
+                            else:
+                                rig.detection_method = "failed"
+                        else:
+                            rig.detection_method = "failed"
+                    except Exception as _exc:
+                        logger.exception("Geo fallback crashed for rig %s: %s", rig_id, _exc)
+                        rig.detection_method = "failed"
+
+                elif not _sr.ok:
+                    logger.warning(
+                        "Geometry landmark sanity failed for rig %s (%s)",
+                        rig_id, [f.code for f in _sr.failures],
+                    )
+                    rig.detection_method = "failed"
+
             push_ws(user_id, {"rig_id": rig_id, "step": "Saving rigged model…", "pct": 80})
 
             with open(glb_output, "rb") as f:
