@@ -99,6 +99,8 @@ export interface StoredUser {
   avatar?: string | null;
 }
 
+export type DetectionMethod = "geometry" | "llm_vision" | "user_landmarks" | "failed" | "";
+
 export interface RiggedModel {
   id: string;
   name: string;
@@ -110,6 +112,7 @@ export interface RiggedModel {
   detected_pose?: "t_pose" | "a_pose" | "arms_down" | "unclear";
   pose_angle_deg?: number | null;
   pose_confidence?: number;
+  detection_method?: DetectionMethod;
   created_at: string;
 }
 
@@ -119,6 +122,7 @@ export interface RigStatus {
   progress: { step: string; pct: number };
   rigged_glb_url: string | null;
   error_message?: string;
+  detection_method?: DetectionMethod;
 }
 
 export interface Animation {

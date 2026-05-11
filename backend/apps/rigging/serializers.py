@@ -20,6 +20,7 @@ class RiggedModelSerializer(serializers.ModelSerializer):
             "detected_pose",
             "pose_angle_deg",
             "pose_confidence",
+            "detection_method",
             "created_at",
         ]
         read_only_fields = fields
@@ -39,3 +40,4 @@ class RigStatusSerializer(serializers.Serializer):
     progress = serializers.DictField(required=False)
     rigged_glb_url = serializers.URLField(allow_null=True)
     error_message = serializers.CharField(allow_blank=True, required=False)
+    detection_method = serializers.CharField(allow_blank=True, required=False)

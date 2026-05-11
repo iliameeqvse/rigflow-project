@@ -256,11 +256,12 @@ class RiggedModelViewSet(ModelViewSet):
             progress = {"step": "Failed", "pct": 0}
 
         return Response(RigStatusSerializer({
-            "rig_id":         rig.id,
-            "status":         rig.status,
-            "progress":       progress,
-            "rigged_glb_url": _glb_url(request, rig),
-            "error_message":  rig.error_message or "",
+            "rig_id":           rig.id,
+            "status":           rig.status,
+            "progress":         progress,
+            "rigged_glb_url":   _glb_url(request, rig),
+            "error_message":    rig.error_message or "",
+            "detection_method": rig.detection_method or "",
         }).data)
 
     @extend_schema(

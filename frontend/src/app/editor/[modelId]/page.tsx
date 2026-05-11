@@ -32,6 +32,7 @@ export default function EditorPage() {
   const [detectedPose, setDetectedPose]             = useState<DetectedPose | null>(null);
   const [poseAngle, setPoseAngle]                   = useState<number | null>(null);
   const [poseConfidence, setPoseConfidence]         = useState<number>(0);
+  const [detectionMethod, setDetectionMethod]       = useState<string>("");
 
   // Fetch the rig's bone map, Blender stdout, and pose classification once
   // rigging completes. The status endpoint doesn't carry these — only the
@@ -45,6 +46,7 @@ export default function EditorPage() {
         detected_pose?: DetectedPose;
         pose_angle_deg?: number | null;
         pose_confidence?: number;
+        detection_method?: string;
       }>(`/rigs/${modelId}/`)
       .then(({ data }) => {
         setBoneMapping(data.bone_mapping ?? {});
@@ -52,6 +54,7 @@ export default function EditorPage() {
         setDetectedPose(data.detected_pose ?? null);
         setPoseAngle(data.pose_angle_deg ?? null);
         setPoseConfidence(data.pose_confidence ?? 0);
+        setDetectionMethod(data.detection_method ?? "");
       })
       .catch(() => {
         setBoneMapping({});
@@ -59,6 +62,7 @@ export default function EditorPage() {
         setDetectedPose(null);
         setPoseAngle(null);
         setPoseConfidence(0);
+        setDetectionMethod("");
       });
   }, [status, modelId, landmarkQueued]);
 
@@ -133,7 +137,7 @@ export default function EditorPage() {
       <div className="mx-auto w-full max-w-6xl px-6">
         <div className="flex items-center gap-3">
           <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">
-            // Editor
+            {"// Editor"}
           </span>
           <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
             rig: {modelId?.slice(0, 8)}
@@ -212,9 +216,28 @@ export default function EditorPage() {
                   <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent text-background">
                     <CheckIcon className="h-3.5 w-3.5" />
                   </span>
-                  <span className="text-sm font-medium text-foreground">
-                    Rigging complete — your model is ready.
-                  </span>
+                  <div>
+                    <span className="text-sm font-medium text-foreground">
+                      Rigging complete — your model is ready.
+                    </span>
+                    {detectionMethod && (
+                      <span className={`ml-2 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                        detectionMethod === "llm_vision"
+                          ? "bg-purple-500/15 text-purple-400"
+                          : detectionMethod === "geometry"
+                          ? "bg-accent/15 text-accent"
+                          : detectionMethod === "user_landmarks"
+                          ? "bg-blue-500/15 text-blue-400"
+                          : "bg-warning/15 text-warning"
+                      }`}>
+                        {detectionMethod === "llm_vision" && "AI vision"}
+                        {detectionMethod === "geometry" && "Auto-detect"}
+                        {detectionMethod === "user_landmarks" && "Manual"}
+                        {detectionMethod === "failed" && "Geometry fallback"}
+                        {!["llm_vision","geometry","user_landmarks","failed"].includes(detectionMethod) && detectionMethod}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <a
                   href={glbUrl}
@@ -224,6 +247,27 @@ export default function EditorPage() {
                   <DownloadIcon className="h-4 w-4" />
                   Download GLB
                 </a>
+              </motion.div>
+            )}
+
+            {/* Landmark-failure soft warning */}
+            {detectionMethod === "failed" && !(landmarkQueued && status !== "done") && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-5 rounded-xl border border-warning/30 bg-warning/5 px-5 py-3.5"
+              >
+                <div className="flex items-start gap-2.5 text-warning">
+                  <AlertIcon />
+                  <div>
+                    <p className="text-sm font-medium">Landmark detection fell back to geometry defaults</p>
+                    <p className="mt-1 text-xs text-warning/80">
+                      The AI-detected bone positions failed the anatomical check. The rig was built
+                      using automatic geometry analysis instead. Use &ldquo;Edit rig&rdquo; to manually
+                      adjust bone placement.
+                    </p>
+                  </div>
+                </div>
               </motion.div>
             )}
 
