@@ -25,9 +25,17 @@ db.sqlite3-journal
 *.log
 local_settings.py
 
-# Media uploads — never commit user files or generated GLBs
-backend/media/rigs/
-backend/media/animations/
+# collectstatic output — regenerated on every deploy, never commit.
+backend/staticfiles/
+
+# Media uploads — never commit user files, generated GLBs, or thumbnails.
+backend/media/
+
+# DB dumps / migration backups — keep schema in migrations, not in dumps.
+*.sql
+*.sql.gz
+*.dump
+dump.rdb
 
 # ── Environment & secrets ─────────────────────────────────────────────────────
 .env
@@ -36,6 +44,8 @@ backend/media/animations/
 *.pem
 *.key
 *.pub
+secrets/
+*.secret
 
 # ── Node / Next.js ────────────────────────────────────────────────────────────
 node_modules/
@@ -61,6 +71,18 @@ Thumbs.db
 # ── Blender temp files ────────────────────────────────────────────────────────
 *.blend1
 *.blend2
+*.blend@
+# Headless ortho render scratch dirs (`/tmp/tmp*` outside the tree is the normal
+# location, but in case anyone redirects an output dir into the repo by mistake)
+ortho/
+
+# ── Build / runtime artifacts ─────────────────────────────────────────────────
+*.bak
+*.tmp
+tmp/
+.history/
+*.iml
+__MACOSX/
 
 # ── Test / coverage artefacts ─────────────────────────────────────────────────
 .tox/
