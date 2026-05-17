@@ -159,6 +159,38 @@ def strip_non_meshes():
             bpy.data.objects.remove(obj, do_unlink=True)
 
 
+def purge_missing_image_refs():
+    """Drop bpy.data.images that point to nonexistent files with no packed
+    binary data. Some FBX files reference embedded textures by placeholder
+    names like '*0' / '*1' which Blender records as image filepaths that
+    don't resolve on disk; without cleanup Cycles prints 'Image file ...
+    does not exist' for every render pass and the affected materials render
+    with whatever the Image Texture node falls back to instead of the shader
+    graph's default colors."""
+    removed = []
+    for img in list(bpy.data.images):
+        if img.source != "FILE":
+            continue
+        if img.packed_file is not None:
+            # Embedded data intact even when filepath looks broken.
+            continue
+        fp = img.filepath
+        if not fp:
+            continue
+        try:
+            resolved = bpy.path.abspath(fp, library=img.library)
+        except Exception:
+            resolved = fp
+        if Path(resolved).exists():
+            continue
+        removed.append((img.name, fp))
+        bpy.data.images.remove(img)
+    if removed:
+        log(f"Purged {len(removed)} unresolvable image reference(s) after import:")
+        for name, fp in removed:
+            log(f"  {name!r} (was {fp!r})")
+
+
 # ---------------------------------------------------------------------------
 # Geometry measurement
 # ---------------------------------------------------------------------------
@@ -1239,6 +1271,68 @@ def build_bone_map(rig):
 # Ortho rendering (Task 8 — vision round-trip phase 1)
 # ---------------------------------------------------------------------------
 
+ORIENTATION_MARKER_PREFIX = "WGT-rigflow_marker_"
+
+
+def add_orientation_markers(meshes):
+    """Add red (character-LEFT, +X) and blue (character-RIGHT, -X) emission
+    cubes just outside the body's X extent at chest height. Returns the list
+    of created objects so the caller can remove them after rendering.
+
+    The WGT- name prefix matches get_meshes()'s skip rule so the markers never
+    leak into landmark detection or skinning even if removal is missed.
+    """
+    b = aabb(world_vertices(meshes))
+    mn, mx = b["min"], b["max"]
+    cy = (mn.y + mx.y) / 2
+    xsize = mx.x - mn.x
+    zsize = mx.z - mn.z
+    # Camera frame pads max(xsize,zsize) by 15% (7.5% each side); keep total
+    # marker extent under 7.5% of max(xsize,zsize) so it stays in-frame.
+    scale = max(xsize, zsize)
+    pad = 0.04 * scale
+    size = 0.06 * scale
+    chest_z = mn.z + 0.75 * zsize
+
+    markers = []
+    for suffix, x_pos, color in (
+        ("L", mx.x + pad, (1.0, 0.0, 0.0, 1.0)),
+        ("R", mn.x - pad, (0.0, 0.0, 1.0, 1.0)),
+    ):
+        bpy.ops.mesh.primitive_cube_add(size=size, location=(x_pos, cy, chest_z))
+        obj = bpy.context.active_object
+        obj.name = f"{ORIENTATION_MARKER_PREFIX}{suffix}"
+        # Emission material — vivid color independent of scene lighting and
+        # filmic tonemap, so it reads as pure red / blue at any sample count.
+        mat = bpy.data.materials.new(name=f"{obj.name}_mat")
+        mat.use_nodes = True
+        nt = mat.node_tree
+        nt.nodes.clear()
+        out_node = nt.nodes.new("ShaderNodeOutputMaterial")
+        emit = nt.nodes.new("ShaderNodeEmission")
+        emit.inputs["Color"].default_value = color
+        emit.inputs["Strength"].default_value = 5.0
+        nt.links.new(emit.outputs["Emission"], out_node.inputs["Surface"])
+        obj.data.materials.append(mat)
+        markers.append(obj)
+
+    return markers
+
+
+def remove_orientation_markers(markers):
+    """Reverse of add_orientation_markers — also frees orphan mesh + material
+    data so repeated render passes don't leak datablocks."""
+    for obj in markers:
+        mesh_data = obj.data
+        mats = [s.material for s in obj.material_slots if s.material]
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if mesh_data and not mesh_data.users:
+            bpy.data.meshes.remove(mesh_data)
+        for mat in mats:
+            if not mat.users:
+                bpy.data.materials.remove(mat)
+
+
 def render_ortho_views(meshes, out_dir, image_size=512):
     """Render front/back/left/right ortho PNGs; return views dict."""
     out_path = Path(out_dir)
@@ -1308,10 +1402,16 @@ def render_ortho_views(meshes, out_dir, image_size=512):
         rot_quat = (target - loc).to_track_quat("-Z", "Z")
         cam_obj.rotation_euler = rot_quat.to_euler()
 
-        scene.camera = cam_obj
-        png_path = str(out_path / f"{name}.png")
-        scene.render.filepath = png_path
-        bpy.ops.render.render(write_still=True)
+        # Markers only in front/back — side views see a profile where the
+        # markers overlap on the camera axis and add no information.
+        markers = add_orientation_markers(meshes) if name in ("front", "back") else []
+        try:
+            scene.camera = cam_obj
+            png_path = str(out_path / f"{name}.png")
+            scene.render.filepath = png_path
+            bpy.ops.render.render(write_still=True)
+        finally:
+            remove_orientation_markers(markers)
 
         views[name] = {
             "path": png_path,
@@ -1319,6 +1419,7 @@ def render_ortho_views(meshes, out_dir, image_size=512):
             "ortho_scale": cam_data.ortho_scale,
             "camera_world_pos": [loc.x, loc.y, loc.z],
             "look_at": [target.x, target.y, target.z],
+            "has_orientation_markers": name in ("front", "back"),
         }
         log(f"Rendered {name} → {png_path}")
 
@@ -1514,6 +1615,32 @@ def refine_seeds(seeds, meshes):
     return refined
 
 
+def normalize_bilateral_landmark_sides(landmarks):
+    """Ensure RigFlow's landmark convention: character-left is +X.
+
+    Vision models can interpret "left" from the viewer's perspective on
+    front renders, or mix conventions across body parts. The rigging code
+    expects every left/right pair to be mirrored as left.x > right.x.
+    """
+    normalized = dict(landmarks)
+    for left_key, right_key, _ in (
+        ("left_shoulder", "right_shoulder", "shoulder"),
+        ("left_elbow", "right_elbow", "elbow"),
+        ("left_wrist", "right_wrist", "wrist"),
+        ("left_hip", "right_hip", "hip"),
+        ("left_knee", "right_knee", "knee"),
+        ("left_ankle", "right_ankle", "ankle"),
+    ):
+        left = normalized.get(left_key)
+        right = normalized.get(right_key)
+        if left is None or right is None:
+            continue
+        if left[0] < right[0]:
+            normalized[left_key], normalized[right_key] = right, left
+            log(f"Normalized AI landmark side labels: swapped {left_key}/{right_key}")
+    return normalized
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1526,6 +1653,7 @@ def main():
     clear_scene()
     import_model(args.input, args.format)
     strip_non_meshes()
+    purge_missing_image_refs()
 
     meshes = get_meshes()
     if not meshes:
@@ -1675,6 +1803,12 @@ def main():
                 final_landmarks[k] = to_three_from_blender(seeds[k])
             else:
                 final_landmarks[k] = geo_landmarks[k]
+        final_landmarks = normalize_bilateral_landmark_sides(final_landmarks)
+
+        if detected_pose["name"] == "t_pose" and detected_pose["confidence"] >= 0.75:
+            for k in ("left_wrist", "right_wrist"):
+                final_landmarks[k] = geo_landmarks[k]
+            log("T-pose AI refine: using geometry extremities for wrists")
 
         if args.landmarks_out:
             Path(args.landmarks_out).write_text(json.dumps(final_landmarks, indent=2))

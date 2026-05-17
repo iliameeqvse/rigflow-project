@@ -24,9 +24,12 @@ class ClaudeProvider:
         )
 
     def detect(self, request: VisionRequest) -> VisionResponse | None:
-        prompt = VISION_PROMPT_TEMPLATE.format(
-            mesh_object_names=", ".join(m["name"] for m in request.mesh_objects)
+        mesh_object_names = (
+            ", ".join(m["name"] for m in request.mesh_objects)
             if request.mesh_objects else "unknown"
+        )
+        prompt = VISION_PROMPT_TEMPLATE.replace(
+            "{mesh_object_names}", mesh_object_names
         )
         content = [{"type": "text", "text": prompt}]
         for view_name in ("front", "back", "left", "right"):

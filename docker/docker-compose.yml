@@ -39,6 +39,8 @@ services:
       sh -c "python manage.py migrate &&
              python manage.py collectstatic --noinput &&
              daphne -b 0.0.0.0 -p 8000 rigflow.asgi:application"
+    env_file:
+      - ../backend/.env
     environment:
       DJANGO_SETTINGS_MODULE: rigflow.settings.production
       DATABASE_URL: postgres://rigflow:${DB_PASSWORD:-rigflow123}@db:5432/rigflow
@@ -77,6 +79,8 @@ services:
         --loglevel=info
         --concurrency=2
         -Q default,rigging,animations
+    env_file:
+      - ../backend/.env
     environment:
       DJANGO_SETTINGS_MODULE: rigflow.settings.production
       DATABASE_URL: postgres://rigflow:${DB_PASSWORD:-rigflow123}@db:5432/rigflow

@@ -95,14 +95,15 @@ def check_landmarks(landmarks: dict, *, world_aabb) -> SanityResult:
                 f"point={landmarks[k]} box={inflated}",
             ))
 
-    # Anatomical Y-ordering: ankle < knee < hip <= groin < shoulder <= chin
+    # Anatomical Y-ordering. Keep the leg/torso stack strict, but do not
+    # require shoulder <= chin: stylized characters with large heads, masks,
+    # or low chins can have shoulder joints visually above the chin point.
     z_chain = [
         ("ankle",    min(landmarks["left_ankle"][1],    landmarks["right_ankle"][1])),
         ("knee",     min(landmarks["left_knee"][1],     landmarks["right_knee"][1])),
         ("hip",      min(landmarks["left_hip"][1],      landmarks["right_hip"][1])),
         ("groin",    landmarks["groin"][1]),
         ("shoulder", min(landmarks["left_shoulder"][1], landmarks["right_shoulder"][1])),
-        ("chin",     landmarks["chin"][1]),
     ]
     for (a, av), (b, bv) in zip(z_chain, z_chain[1:]):
         if av > bv:

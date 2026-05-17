@@ -124,3 +124,52 @@ class SanityCascadeTests(SimpleTestCase):
         sr = check_landmarks(lm, world_aabb=self._AABB)
         self.assertTrue(sr.ok, f"Unexpected failures: {sr.failures}")
 
+
+class VisionPromptTests(SimpleTestCase):
+    """The vision prompt is load-bearing — it's the only place we tell Claude
+    that the orientation markers exist and how to interpret them. These tests
+    pin the behavior so a careless prompt edit can't silently drop the marker
+    instructions and re-introduce the viewer/character left-right swap.
+    """
+
+    def _prompt(self) -> str:
+        from apps.rigging.landmark_vision.prompts import VISION_PROMPT_TEMPLATE
+        return VISION_PROMPT_TEMPLATE
+
+    def test_mentions_red_and_blue_marker_convention(self):
+        prompt = self._prompt()
+        self.assertIn("RED", prompt)
+        self.assertIn("BLUE", prompt)
+        # The convention must explicitly tie color to anatomical side.
+        # We accept either "RED ... LEFT" or "LEFT ... RED" co-occurring close
+        # together; the simple form below is good enough as a regression net.
+        self.assertRegex(prompt, r"RED[\s\S]{0,200}LEFT")
+        self.assertRegex(prompt, r"BLUE[\s\S]{0,200}RIGHT")
+
+    def test_addresses_back_facing_case(self):
+        # The viewer/character mismatch failure mode is when 'front' actually
+        # shows the back of the character. The prompt must say the rule still
+        # applies in that case, otherwise vision models default to viewer-left.
+        prompt = self._prompt().lower()
+        self.assertTrue(
+            "back" in prompt and ("even" in prompt or "regardless" in prompt),
+            "Prompt should call out the back-facing 'front' render explicitly",
+        )
+
+    def test_keeps_mesh_object_names_placeholder(self):
+        # The provider does .replace("{mesh_object_names}", ...) — drop the
+        # placeholder and the scene context disappears silently.
+        self.assertIn("{mesh_object_names}", self._prompt())
+
+    def test_keeps_all_14_landmark_keys(self):
+        prompt = self._prompt()
+        for key in (
+            "chin", "groin",
+            "left_shoulder", "right_shoulder",
+            "left_elbow",    "right_elbow",
+            "left_wrist",    "right_wrist",
+            "left_hip",      "right_hip",
+            "left_knee",     "right_knee",
+            "left_ankle",    "right_ankle",
+        ):
+            self.assertIn(key, prompt, f"Prompt missing landmark key: {key}")

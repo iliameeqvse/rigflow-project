@@ -55,6 +55,14 @@ class SanityTests(SimpleTestCase):
         self.assertFalse(r.ok)
         self.assertIn("outside_aabb_left_wrist", [f.code for f in r.failures])
 
+    def test_stylized_shoulders_above_chin_passes(self):
+        stylized = _good()
+        stylized["chin"] = (0.0, 1.50, 0.0)
+        stylized["left_shoulder"] = (0.20, 1.68, 0.0)
+        stylized["right_shoulder"] = (-0.20, 1.68, 0.0)
+        r = check_landmarks(stylized, world_aabb=((-1, 0, -1), (1, 2, 1)))
+        self.assertTrue(r.ok, r.failures)
+
     def test_missing_key_fails(self):
         bad = _good()
         del bad["chin"]

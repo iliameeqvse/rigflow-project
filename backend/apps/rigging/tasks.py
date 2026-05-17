@@ -81,9 +81,13 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
             else:
                 # --- Phase 1: ortho-render + AI landmark detection ---
                 ai_response_path: Path | None = None
+                ai_phase_log: list[str] = []
 
                 if not user_landmarks:
                     provider = get_provider()
+                    ai_phase_log.append(
+                        f"[RigFlow] Vision provider: {type(provider).__name__}"
+                    )
                     request_path = tmp / "ai_request.json"
                     ortho_dir    = tmp / "ortho"
 
@@ -106,6 +110,17 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                                       "step": "Rendering character views…", "pct": 20})
                     try:
                         rc, out, err = _blender_call(render_cmd, timeout=120, cwd=cwd)
+                        ai_phase_log.append(
+                            f"[RigFlow] Ortho render exited with code {rc}"
+                        )
+                        if out:
+                            ai_phase_log.append(
+                                "[RigFlow] Ortho render stdout:\n" + out[-4000:]
+                            )
+                        if err:
+                            ai_phase_log.append(
+                                "[RigFlow] Ortho render stderr:\n" + err[-2000:]
+                            )
                         if rc != 0:
                             logger.warning(
                                 "Ortho render exited %d for rig %s; skipping AI phase.\n%s",
@@ -125,6 +140,9 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                                               "step": "Calling vision model…", "pct": 35})
                             vision_resp = provider.detect(vision_req)
                             if vision_resp is not None:
+                                ai_phase_log.append(
+                                    "[RigFlow] Vision model returned landmarks"
+                                )
                                 ai_response_path = tmp / "ai_response.json"
                                 ai_response_path.write_text(json.dumps({
                                     "landmarks":    vision_resp.landmarks,
@@ -134,11 +152,28 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                                 rig.vision_response_raw = vision_resp.raw
                                 rig.detection_method = "llm_vision"
                             else:
+                                ai_phase_log.append(
+                                    "[RigFlow] Vision model returned no landmarks; using geometry"
+                                )
+                                logger.warning(
+                                    "Vision provider %s returned no landmarks for rig %s; using geometry",
+                                    type(provider).__name__, rig_id,
+                                )
                                 rig.detection_method = "geometry"
+                        else:
+                            ai_phase_log.append(
+                                "[RigFlow] Ortho render produced no AI request; using geometry"
+                            )
                     except subprocess.TimeoutExpired:
+                        ai_phase_log.append(
+                            "[RigFlow] Ortho render timed out; using geometry"
+                        )
                         logger.warning("Ortho render timed out for rig %s; "
                                        "skipping AI phase.", rig_id)
                     except Exception as e:
+                        ai_phase_log.append(
+                            f"[RigFlow] AI phase error: {e}; using geometry"
+                        )
                         logger.exception("AI phase error for rig %s: %s", rig_id, e)
                         rig.detection_method = "geometry"
                 else:
@@ -164,7 +199,7 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
 
                 try:
                     rc, out, err = _blender_call(rig_cmd, timeout=600, cwd=cwd)
-                    rig.rig_log = out[-8000:]
+                    rig.rig_log = "\n".join(ai_phase_log + [out[-8000:]])
 
                     if rc != 0:
                         rig.rig_log += f"\nSTDERR: {err[-2000:]}"
@@ -210,9 +245,14 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                 _sr = check_landmarks(_candidate, world_aabb=_LOOSE_AABB)
 
                 if not _sr.ok and ai_response_path is not None:
+                    _failure_codes = [f.code for f in _sr.failures]
+                    rig.rig_log += (
+                        "\n[RigFlow] AI landmark sanity failed "
+                        f"({_failure_codes}); running geometry fallback"
+                    )
                     logger.warning(
                         "AI landmark sanity failed for rig %s (%s); running geometry fallback",
-                        rig_id, [f.code for f in _sr.failures],
+                        rig_id, _failure_codes,
                     )
                     push_ws(user_id, {"rig_id": rig_id,
                                       "step": "AI landmarks failed; re-running geometry…",
@@ -258,9 +298,14 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                         rig.detection_method = "failed"
 
                 elif not _sr.ok:
+                    _failure_codes = [f.code for f in _sr.failures]
+                    rig.rig_log += (
+                        "\n[RigFlow] Geometry landmark sanity failed "
+                        f"({_failure_codes})"
+                    )
                     logger.warning(
                         "Geometry landmark sanity failed for rig %s (%s)",
-                        rig_id, [f.code for f in _sr.failures],
+                        rig_id, _failure_codes,
                     )
                     rig.detection_method = "failed"
 
