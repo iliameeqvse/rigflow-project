@@ -34,6 +34,30 @@ def _blender_call(cmd, timeout=600, cwd=None):
     return result.returncode, result.stdout or "", result.stderr or ""
 
 
+def _extract_rotation_args(extra_args: list | None) -> list:
+    """Return only the --initial-rotation-* flags *with their values*.
+
+    extra_args is a flat, interleaved list:
+        ["--initial-rotation-x", "15.0", "--initial-rotation-y", "0.0", ...]
+    A naive flag-name filter keeps "--initial-rotation-x" but drops "15.0",
+    which makes argparse fail in the ortho-render subprocess. Keep each
+    recognised flag together with the token that follows it.
+    """
+    if not extra_args:
+        return []
+    out: list = []
+    i = 0
+    while i < len(extra_args):
+        token = extra_args[i]
+        if token.startswith("--initial-rotation") and i + 1 < len(extra_args):
+            out.append(token)
+            out.append(extra_args[i + 1])
+            i += 2
+        else:
+            i += 1
+    return out
+
+
 def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
     """
     Plain function — NOT a Celery task — so it can be called directly from
@@ -92,8 +116,8 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                     ortho_dir    = tmp / "ortho"
 
                     # Build base rotation flags from extra_args (if any).
-                    rotation_args = [a for a in (extra_args or [])
-                                     if a.startswith("--initial-rotation")]
+                    # Keep each flag with its value — see _extract_rotation_args.
+                    rotation_args = _extract_rotation_args(extra_args)
 
                     render_cmd = [
                         blender_path, "--background", "--python", str(script_path), "--",
@@ -271,9 +295,7 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                         "--pose",          str(_geo_pose),
                         "--format",        rig.original_format,
                     ]
-                    for _a in (extra_args or []):
-                        if _a.startswith("--initial-rotation"):
-                            _geo_cmd.append(_a)
+                    _geo_cmd.extend(_extract_rotation_args(extra_args))
 
                     try:
                         _rc_g, _out_g, _err_g = _blender_call(_geo_cmd, timeout=600, cwd=cwd)
