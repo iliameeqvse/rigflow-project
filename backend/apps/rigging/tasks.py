@@ -172,6 +172,10 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                                     "landmarks":    vision_resp.landmarks,
                                     "mesh_objects": vision_resp.mesh_object_labels,
                                     "notes":        vision_resp.notes,
+                                    # Forward phase-1 per-view camera params so
+                                    # the full-rig pass can raycast each view
+                                    # with its own ortho_scale.
+                                    "views":        request_data.get("views", {}),
                                 }, indent=2))
                                 rig.vision_response_raw = vision_resp.raw
                                 rig.detection_method = "llm_vision"

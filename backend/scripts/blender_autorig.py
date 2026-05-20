@@ -691,7 +691,15 @@ def _promote_legacy_landmarks(d):
         s_key = f"{side}_shoulder"
         e_key = f"{side}_elbow"
         if s_key not in out:
-            shoulder = _vec((wrist.x, wrist.y, groin.z + body_h * 0.82))
+            # Shoulder X must reflect actual shoulder width, NOT the wrist's X.
+            # Previous behavior (`wrist.x, wrist.y, ...`) collapsed shoulder
+            # onto the wrist's X — when wrist came from `_extreme_vertex`
+            # (= the mesh fingertip) the whole arm chain landed at the
+            # fingertip and the rig was catastrophic. 22% of trunk height
+            # (chin→groin) is a sensible humanoid shoulder half-width.
+            sign = 1.0 if wrist.x >= 0 else -1.0
+            shoulder_x = sign * body_h * 0.22
+            shoulder = _vec((shoulder_x, wrist.y, groin.z + body_h * 0.82))
             out[s_key] = shoulder
         else:
             shoulder = out[s_key]
@@ -719,6 +727,63 @@ def _vec(xyz):
         return Vector(xyz)
     except Exception:
         return type(xyz)(xyz) if isinstance(xyz, tuple) else xyz
+
+
+def _pullback_wrist_toward_elbow(wrist, elbow, fraction=0.20):
+    """Move the wrist landmark toward the elbow by `fraction` of the
+    wrist→elbow distance.
+
+    For confirmed T-pose the wrist is overridden with the geometry
+    extremity (`_extreme_vertex`), which lands on the mesh fingertip on
+    every humanoid character (fingers are the most distal vertex in X).
+    DEF-hand is then placed at wrist→`wrist + (wrist-elbow)*0.07`, i.e.
+    from the fingertip extending 7 cm further into empty space. Pulling
+    the wrist back puts DEF-hand inside the actual hand mesh.
+
+    Works on tuples or mathutils.Vector — indexing only.
+    """
+    dx = elbow[0] - wrist[0]
+    dy = elbow[1] - wrist[1]
+    dz = elbow[2] - wrist[2]
+    if dx * dx + dy * dy + dz * dz < 0.0025:  # < 5 cm, degenerate
+        return wrist
+    return _vec((
+        wrist[0] + dx * fraction,
+        wrist[1] + dy * fraction,
+        wrist[2] + dz * fraction,
+    ))
+
+
+def _clamp_elbow_y_to_arm_line(shoulder, elbow, wrist):
+    """For confirmed T-pose, snap elbow Y onto the linear shoulder→wrist
+    line at the elbow's X fraction.
+
+    AI vision sometimes drops the elbow ~15-20 cm below shoulder/wrist Y
+    (anatomically reading the elbow as a "joint" that should sag) — that
+    produces a V-shaped arm rest pose. Animation retargeting against
+    that broken rest pose makes limbs barely move ("model just rotates
+    in place").
+
+    Skips when shoulder.X ≈ wrist.X (arms folded — clamp would be wrong)
+    or when the elbow is already within 6 cm of the line.
+
+    Works on tuples or mathutils.Vector — indexing only.
+    """
+    sx, sy = shoulder[0], shoulder[1]
+    wx, wy = wrist[0], wrist[1]
+    ex, ey = elbow[0], elbow[1]
+    dx = wx - sx
+    if abs(dx) < 0.05:
+        return elbow
+    t = (ex - sx) / dx
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+    expected_y = sy + t * (wy - sy)
+    if abs(ey - expected_y) < 0.06:
+        return elbow
+    return _vec((ex, expected_y, elbow[2]))
 
 
 def _nudge_if_collinear(a, mid, b, y_nudge):
@@ -891,6 +956,19 @@ def detect_landmarks(meshes, pose=None, reference_height=None):
            "left_wrist": lw, "right_wrist": rw,
            "left_ankle": la, "right_ankle": ra}
     fourteen_blender = _promote_legacy_landmarks(six)
+
+    # For confirmed T-pose, the wrist landmark from `_extreme_vertex` is
+    # the mesh fingertip. Pull it back along wrist→elbow so DEF-hand
+    # lands inside the actual hand, mirroring the AI-vision path's fix.
+    # Safe to apply unconditionally here because the geometry T-pose
+    # branch is the only one that uses _extreme_vertex for wrists.
+    if is_t:
+        for side in ("left", "right"):
+            w_key, e_key = f"{side}_wrist", f"{side}_elbow"
+            fourteen_blender[w_key] = _pullback_wrist_toward_elbow(
+                fourteen_blender[w_key], fourteen_blender[e_key]
+            )
+
     return {k: to_three(v) for k, v in fourteen_blender.items()}
 
 
@@ -1531,7 +1609,31 @@ def _bvh_tree_for(mesh):
     return BVHTree.FromObject(mesh, depsgraph)
 
 
-def ai_pixels_to_world_seeds(ai_response, image_size, ortho_scale, world_aabb, meshes):
+def build_view_ortho_scales(ai_response, fallback):
+    """Return the ortho_scale to use for each camera view.
+
+    Phase 1 (render_ortho_views) renders front/back with one ortho_scale and
+    left/right with another — the image planes span different world-axis
+    pairs. tasks.py forwards those per-view scales into ai_response.json under
+    the "views" key. Using a single recomputed scale for every view
+    mis-projects side-view pixels for meshes whose Y extent differs from their
+    X extent.
+
+    `fallback` is used for any view whose scale is missing or unparseable.
+    """
+    views = (ai_response or {}).get("views") or {}
+    scales = {}
+    for name in ("front", "back", "left", "right"):
+        view = views.get(name) or {}
+        raw = view.get("ortho_scale")
+        try:
+            scales[name] = float(raw) if raw is not None else float(fallback)
+        except (TypeError, ValueError):
+            scales[name] = float(fallback)
+    return scales
+
+
+def ai_pixels_to_world_seeds(ai_response, image_size, view_ortho_scales, world_aabb, meshes):
     """For each of the 14 landmark keys, triangulate front + side pixel coords
     into a 3D world-space seed via BVH raycasting.
 
@@ -1554,7 +1656,7 @@ def ai_pixels_to_world_seeds(ai_response, image_size, ortho_scale, world_aabb, m
             continue
 
         fo, fd = pixel_to_world_ray("front", front_px[0], front_px[1],
-                                    image_size, ortho_scale, world_aabb)
+                                    image_size, view_ortho_scales["front"], world_aabb)
         hit_f = raycast(fo, fd)
         if hit_f is None:
             # Fallback: mid-plane hit estimate.
@@ -1573,7 +1675,7 @@ def ai_pixels_to_world_seeds(ai_response, image_size, ortho_scale, world_aabb, m
 
         if side_px is not None:
             so, sd = pixel_to_world_ray(side_name, side_px[0], side_px[1],
-                                        image_size, ortho_scale, world_aabb)
+                                        image_size, view_ortho_scales[side_name], world_aabb)
             hit_s = raycast(so, sd) or hit_f
             # Merge: front gives x,z; side gives y; average z for stability.
             seed = Vector((hit_f.x, hit_s.y, (hit_f.z + hit_s.z) / 2))
@@ -1775,6 +1877,7 @@ def main():
         xsize = mx_cur.x - mn_cur.x
         zsize = mx_cur.z - mn_cur.z
         os_approx = max(xsize, zsize) * 1.15
+        view_ortho_scales = build_view_ortho_scales(ai_response, os_approx)
         world_aabb_t = (
             (mn_cur.x, mn_cur.y, mn_cur.z),
             (mx_cur.x, mx_cur.y, mx_cur.z),
@@ -1782,7 +1885,7 @@ def main():
 
         try:
             seeds = ai_pixels_to_world_seeds(
-                ai_response, 512, os_approx, world_aabb_t, meshes
+                ai_response, 512, view_ortho_scales, world_aabb_t, meshes
             )
             seeds = refine_seeds(seeds, meshes)
             log(f"AI seeds resolved: {len(seeds)} of {len(LANDMARK_KEYS)} landmarks")
@@ -1809,6 +1912,22 @@ def main():
             for k in ("left_wrist", "right_wrist"):
                 final_landmarks[k] = geo_landmarks[k]
             log("T-pose AI refine: using geometry extremities for wrists")
+
+            # The geometry extremity is the fingertip on humanoid meshes,
+            # not the wrist joint — pull wrist back along wrist→elbow so
+            # DEF-hand lands inside the actual hand. Then clamp the AI's
+            # elbow Y onto the shoulder/wrist line, since vision models
+            # sometimes drop the elbow ~15-20cm and break retargeting.
+            for side in ("left", "right"):
+                w = final_landmarks[f"{side}_wrist"]
+                e = final_landmarks[f"{side}_elbow"]
+                s = final_landmarks[f"{side}_shoulder"]
+                final_landmarks[f"{side}_wrist"] = _pullback_wrist_toward_elbow(w, e)
+                final_landmarks[f"{side}_elbow"] = _clamp_elbow_y_to_arm_line(
+                    s, e, final_landmarks[f"{side}_wrist"]
+                )
+            log("T-pose AI refine: pulled wrists toward elbows, "
+                "clamped elbow Y onto shoulder/wrist line")
 
         if args.landmarks_out:
             Path(args.landmarks_out).write_text(json.dumps(final_landmarks, indent=2))
