@@ -17,5 +17,6 @@ class RiggedModelAdmin(admin.ModelAdmin):
         "bone_mapping", "landmarks", "bone_corrections",
         "pose_angle_deg", "pose_confidence",
         "detection_method", "vision_response_raw",
+        "landmark_debug_image",
     )
     ordering = ("-created_at",)

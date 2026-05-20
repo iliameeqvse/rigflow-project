@@ -4,6 +4,7 @@ from .models import RiggedModel
 
 class RiggedModelSerializer(serializers.ModelSerializer):
     rigged_glb_url = serializers.SerializerMethodField()
+    landmark_debug_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = RiggedModel
@@ -13,6 +14,7 @@ class RiggedModelSerializer(serializers.ModelSerializer):
             "status",
             "original_format",
             "rigged_glb_url",
+            "landmark_debug_image_url",
             "bone_mapping",
             "file_size_mb",
             "error_message",
@@ -31,6 +33,14 @@ class RiggedModelSerializer(serializers.ModelSerializer):
             if request:
                 return request.build_absolute_uri(obj.rigged_glb.url)
             return obj.rigged_glb.url
+        return None
+
+    def get_landmark_debug_image_url(self, obj) -> str | None:
+        if obj.landmark_debug_image:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(obj.landmark_debug_image.url)
+            return obj.landmark_debug_image.url
         return None
 
 
