@@ -138,12 +138,14 @@ class RiggedModelViewSet(ModelViewSet):
           create           → AnonUploadThrottle + RigUploadThrottle (upload rate)
           rerig / rerig-landmarks → RigUploadThrottle (same as create — triggers Blender)
           status polling   → no throttle (lightweight DB read)
+          landmarks fetch  → no throttle (public read; the editor fetches it
+                             on every load — see permission/auth overrides above)
         """
         if self.action == "create":
             return [AnonUploadThrottle(), RigUploadThrottle()]
         if self.action in ("rerig", "rerig_landmarks"):
             return [RigUploadThrottle()]
-        if self.action == "status_action":
+        if self.action in ("status_action", "landmarks"):
             return []
         return [RigListThrottle()]
 
