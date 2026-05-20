@@ -1674,6 +1674,44 @@ def world_to_pixel(view_name, world_point, image_size, ortho_scale, world_aabb):
     return [px, py]
 
 
+def project_landmarks_to_pixels(landmarks_three, mesh_h, camera_params):
+    """Project three.js-editor-space landmarks back to per-view pixel coords.
+
+    landmarks_three  {key: [tx, ty, tz]} in three.js editor space (Y-up, model
+                     normalised to height 2.0).
+    mesh_h           metarig height in metres — the canonical reference used by
+                     to_three_from_blender (s = 2.0 / mesh_h); needed to invert.
+    camera_params    {"world_aabb": [[..],[..]],
+                      "views": {view: {"ortho_scale": float,
+                                        "image_size": [w, h]}}}
+
+    Returns {view: {key: [px, py] | None}} for front/back/left/right. A landmark
+    is None for a view when it projects outside that view's frame.
+    """
+    world_aabb = (
+        tuple(camera_params["world_aabb"][0]),
+        tuple(camera_params["world_aabb"][1]),
+    )
+    half = mesh_h / 2.0  # inverse of s = 2.0 / mesh_h in to_three_from_blender
+    views = camera_params.get("views") or {}
+
+    out = {}
+    for view in ("front", "back", "left", "right"):
+        vp = views.get(view) or {}
+        ortho_scale = float(vp.get("ortho_scale") or 0.0)
+        image_size = (vp.get("image_size") or [512, 512])[0]
+        view_out = {}
+        for key, tjs in landmarks_three.items():
+            tx, ty, tz = float(tjs[0]), float(tjs[1]), float(tjs[2])
+            # Inverse of to_three_from_blender (bx,by,bz)→(bx*s, bz*s, -by*s):
+            world_point = (tx * half, -tz * half, ty * half)
+            view_out[key] = world_to_pixel(
+                view, world_point, image_size, ortho_scale, world_aabb
+            )
+        out[view] = view_out
+    return out
+
+
 def _bvh_tree_for(mesh):
     from mathutils.bvhtree import BVHTree
     depsgraph = bpy.context.evaluated_depsgraph_get()

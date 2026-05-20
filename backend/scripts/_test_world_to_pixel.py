@@ -61,6 +61,26 @@ far_origin, _ = pixel_to_world_ray("front", 256, 256, IMAGE, OS, AABB)
 far = mod.Vector((far_origin.x + OS * 5, far_origin.y, far_origin.z))
 check("front off-frame → None", world_to_pixel("front", far, IMAGE, OS, AABB) is None)
 
+# project_landmarks_to_pixels: mesh_h=2.0 → half=1.0, so three.js (tx,ty,tz)
+# maps to world (tx, -tz, ty). Centred AABB, front ortho_scale=2, 512px.
+project_landmarks_to_pixels = mod.project_landmarks_to_pixels
+cam_params = {
+    "world_aabb": [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
+    "views": {
+        v: {"ortho_scale": 2.0, "image_size": [512, 512]}
+        for v in ("front", "back", "left", "right")
+    },
+}
+proj = project_landmarks_to_pixels(
+    {"chin": [0.0, 0.0, 0.0], "groin": [0.5, 0.0, 0.0]}, 2.0, cam_params
+)
+check("front chin → image centre",
+      proj["front"]["chin"] == [256.0, 256.0])
+check("front groin → x shifted right",
+      abs(proj["front"]["groin"][0] - 384.0) < 1e-6)
+check("all four views projected",
+      set(proj) == {"front", "back", "left", "right"})
+
 print()
 if failures:
     print(f"FAILED: {failures}")
