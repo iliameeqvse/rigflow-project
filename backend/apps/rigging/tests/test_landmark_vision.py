@@ -173,3 +173,72 @@ class VisionPromptTests(SimpleTestCase):
             "left_ankle",    "right_ankle",
         ):
             self.assertIn(key, prompt, f"Prompt missing landmark key: {key}")
+
+
+class ClaudeProviderStrictValidationTests(SimpleTestCase):
+    """The parser must reject structurally-broken AI responses so detect()
+    falls back to geometry instead of feeding garbage into the raycast."""
+
+    def _provider(self):
+        from apps.rigging.landmark_vision.claude_provider import ClaudeProvider
+        return ClaudeProvider.__new__(ClaudeProvider)  # skip __init__ — no key needed
+
+    def _payload(self, **overrides):
+        base = {
+            "landmarks": {
+                "front": {"chin": [256, 56]},
+                "back": {},
+                "left": {"chin": [120, 56]},
+                "right": {},
+            },
+            "mesh_objects": {"Object_3": "body"},
+        }
+        base.update(overrides)
+        return json.dumps(base)
+
+    def test_well_formed_payload_parses(self):
+        self.assertIsNotNone(self._provider()._parse(self._payload()))
+
+    def test_null_landmark_is_allowed(self):
+        payload = self._payload(landmarks={
+            "front": {"chin": None}, "back": {}, "left": {}, "right": {},
+        })
+        self.assertIsNotNone(self._provider()._parse(payload))
+
+    def test_non_numeric_coordinate_rejected(self):
+        payload = self._payload(landmarks={
+            "front": {"chin": [256, "bad"]}, "back": {}, "left": {}, "right": {},
+        })
+        self.assertIsNone(self._provider()._parse(payload))
+
+    def test_wrong_length_coordinate_rejected(self):
+        payload = self._payload(landmarks={
+            "front": {"chin": [256, 56, 10]}, "back": {}, "left": {}, "right": {},
+        })
+        self.assertIsNone(self._provider()._parse(payload))
+
+    def test_landmark_value_string_rejected(self):
+        payload = self._payload(landmarks={
+            "front": {"chin": "see notes"}, "back": {}, "left": {}, "right": {},
+        })
+        self.assertIsNone(self._provider()._parse(payload))
+
+    def test_view_not_object_rejected(self):
+        payload = self._payload(landmarks={
+            "front": [], "back": {}, "left": {}, "right": {},
+        })
+        self.assertIsNone(self._provider()._parse(payload))
+
+    def test_non_finite_coordinate_rejected(self):
+        # json.loads accepts NaN by default via parse_constant.
+        payload = ('{"landmarks": {"front": {"chin": [NaN, 56]}, "back": {}, '
+                   '"left": {}, "right": {}}, "mesh_objects": {}}')
+        self.assertIsNone(self._provider()._parse(payload))
+
+    def test_mesh_objects_non_string_value_rejected(self):
+        payload = self._payload(mesh_objects={"Object_3": 123})
+        self.assertIsNone(self._provider()._parse(payload))
+
+    def test_existing_well_formed_fixture_still_parses(self):
+        text = (FIXTURES / "claude_response_johnny.json").read_text()
+        self.assertIsNotNone(self._provider()._parse(text))

@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -81,19 +82,66 @@ class ClaudeProvider:
                     stripped = stripped.lstrip()[4:]
                 stripped = stripped.rsplit("```", 1)[0]
             data = json.loads(stripped)
-            if not all(k in data for k in ("landmarks", "mesh_objects")):
-                return None
-            if not all(v in data["landmarks"] for v in ("front", "back", "left", "right")):
-                return None
-            return VisionResponse(
-                landmarks=data["landmarks"],
-                mesh_object_labels=data["mesh_objects"],
-                notes=data.get("notes", ""),
-                raw=data,
-            )
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
+        except (json.JSONDecodeError, TypeError) as e:
             log.warning("Claude response unparseable: %s", e)
             return None
+
+        if not _validate_vision_payload(data):
+            return None
+
+        return VisionResponse(
+            landmarks=data["landmarks"],
+            mesh_object_labels=data["mesh_objects"],
+            notes=data.get("notes", ""),
+            raw=data,
+        )
+
+
+def _validate_vision_payload(data) -> bool:
+    """Validate the shape of a parsed Claude vision response.
+
+    Returns True only when the payload is structurally safe to feed into the
+    raycast pipeline. Anything else returns False so detect() retries and then
+    falls back to geometry-only detection.
+
+    Rules:
+      - top-level `landmarks` and `mesh_objects` are objects;
+      - `landmarks` has all four view keys, each an object;
+      - every landmark value is either null (an occluded landmark — allowed)
+        or a 2-element array of finite numbers (pixel coords);
+      - `mesh_objects` maps strings to strings.
+    """
+    if not isinstance(data, dict):
+        return False
+    landmarks = data.get("landmarks")
+    mesh_objects = data.get("mesh_objects")
+    if not isinstance(landmarks, dict) or not isinstance(mesh_objects, dict):
+        return False
+
+    for view in ("front", "back", "left", "right"):
+        view_data = landmarks.get(view)
+        if not isinstance(view_data, dict):
+            return False
+        for key, point in view_data.items():
+            if point is None:
+                continue
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                log.warning("Landmark %r in view %r is not a 2-element array", key, view)
+                return False
+            for coord in point:
+                # bool is a subclass of int — reject it explicitly.
+                if isinstance(coord, bool) or not isinstance(coord, (int, float)):
+                    log.warning("Landmark %r in view %r has a non-numeric coord", key, view)
+                    return False
+                if not math.isfinite(coord):
+                    log.warning("Landmark %r in view %r has a non-finite coord", key, view)
+                    return False
+
+    for name, label in mesh_objects.items():
+        if not isinstance(name, str) or not isinstance(label, str):
+            log.warning("mesh_objects entry %r → %r is not string→string", name, label)
+            return False
+    return True
 
 
 def _b64(path: str) -> str:
