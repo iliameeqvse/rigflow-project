@@ -88,6 +88,7 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
             bone_data_path = tmp / "bones.json"
             pose_data_path = tmp / "pose.json"
             landmarks_path = tmp / "landmarks.json"
+            pixels_path    = tmp / "landmark_pixels.json"
 
             with rig.original_file.open("rb") as f:
                 input_path.write_bytes(f.read())
@@ -224,6 +225,10 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                     rig_cmd.extend(extra_args)
                 if ai_response_path is not None:
                     rig_cmd.extend(["--landmarks-from-ai", str(ai_response_path)])
+                    rig_cmd.extend([
+                        "--landmark-pixels-out", str(pixels_path),
+                        "--camera-params",       str(request_path),
+                    ])
 
                 try:
                     rc, out, err = _blender_call(rig_cmd, timeout=600, cwd=cwd)
@@ -286,18 +291,21 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                                       "step": "AI landmarks failed; re-running geometry…",
                                       "pct": 65})
 
-                    _geo_glb   = tmp / "rigged_geo.glb"
-                    _geo_bones = tmp / "bones_geo.json"
-                    _geo_lm    = tmp / "landmarks_geo.json"
-                    _geo_pose  = tmp / "pose_geo.json"
-                    _geo_cmd   = [
+                    _geo_glb    = tmp / "rigged_geo.glb"
+                    _geo_bones  = tmp / "bones_geo.json"
+                    _geo_lm     = tmp / "landmarks_geo.json"
+                    _geo_pose   = tmp / "pose_geo.json"
+                    _geo_pixels = tmp / "landmark_pixels_geo.json"
+                    _geo_cmd    = [
                         blender_path, "--background", "--python", str(script_path), "--",
-                        "--input",         str(input_path),
-                        "--output",        str(_geo_glb),
-                        "--bones",         str(_geo_bones),
-                        "--landmarks-out", str(_geo_lm),
-                        "--pose",          str(_geo_pose),
-                        "--format",        rig.original_format,
+                        "--input",               str(input_path),
+                        "--output",              str(_geo_glb),
+                        "--bones",               str(_geo_bones),
+                        "--landmarks-out",       str(_geo_lm),
+                        "--pose",                str(_geo_pose),
+                        "--format",              rig.original_format,
+                        "--landmark-pixels-out", str(_geo_pixels),
+                        "--camera-params",       str(request_path),
                     ]
                     _geo_cmd.extend(_extract_rotation_args(extra_args))
 
@@ -309,6 +317,7 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                             bone_data_path = _geo_bones
                             landmarks_path = _geo_lm
                             pose_data_path = _geo_pose
+                            pixels_path    = _geo_pixels
                             if _geo_lm.exists():
                                 _candidate_g = json.loads(_geo_lm.read_text())
                                 _sr_g = check_landmarks(_candidate_g, world_aabb=_LOOSE_AABB)
@@ -345,6 +354,27 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
 
             if landmarks_path.exists():
                 rig.landmarks = json.loads(landmarks_path.read_text())
+
+            # Landmark debug photo — best-effort, llm_vision path only.
+            if ai_response_path is not None and pixels_path.exists():
+                try:
+                    from .debug_photo import build_landmark_debug_photo
+                    _ai_picks = json.loads(
+                        ai_response_path.read_text()
+                    ).get("landmarks", {})
+                    _final_px = json.loads(pixels_path.read_text())
+                    _photo = tmp / "landmark_debug.png"
+                    if build_landmark_debug_photo(
+                        tmp / "ortho", _ai_picks, _final_px, _photo
+                    ):
+                        with open(_photo, "rb") as f:
+                            rig.landmark_debug_image.save(
+                                f"{rig.id}_landmarks.png", File(f), save=False
+                            )
+                except Exception as e:
+                    logger.warning(
+                        "Landmark debug photo failed for rig %s: %s", rig_id, e
+                    )
 
             if pose_data_path.exists():
                 try:
