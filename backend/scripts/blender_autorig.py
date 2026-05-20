@@ -76,6 +76,13 @@ def parse_args():
                    help="Path to AI vision response JSON. When set, Blender raycasts "
                         "pixel coords into 3D seeds and uses them for landmark placement. "
                         "Wired up fully in M4; stub in M2.")
+    p.add_argument("--landmark-pixels-out", default=None,
+                   help="If set (with --camera-params), write the final placed "
+                        "landmarks projected to per-view pixel coords as JSON. "
+                        "Consumed by the Django task to build the debug photo.")
+    p.add_argument("--camera-params", default=None,
+                   help="Path to the Phase-1 ai_request.json — supplies world_aabb "
+                        "and per-view ortho_scale for --landmark-pixels-out.")
     p.add_argument("--initial-rotation-x", type=float, default=0.0)
     p.add_argument("--initial-rotation-y", type=float, default=0.0)
     p.add_argument("--initial-rotation-z", type=float, default=0.0)
@@ -1712,6 +1719,27 @@ def project_landmarks_to_pixels(landmarks_three, mesh_h, camera_params):
     return out
 
 
+def write_landmark_pixels_if_requested(args, landmarks_three, mesh_h):
+    """Write the final-landmark pixel-projection sidecar when both
+    --landmark-pixels-out and --camera-params were supplied.
+
+    Best-effort: any error is logged and swallowed so it never affects the
+    rig result.
+    """
+    if not (args.landmark_pixels_out and args.camera_params):
+        return
+    try:
+        camera_params = json.loads(Path(args.camera_params).read_text())
+        coerced = {
+            k: [float(c) for c in v] for k, v in landmarks_three.items()
+        }
+        pixels = project_landmarks_to_pixels(coerced, mesh_h, camera_params)
+        Path(args.landmark_pixels_out).write_text(json.dumps(pixels, indent=2))
+        log(f"Wrote landmark pixel projection → {args.landmark_pixels_out}")
+    except Exception as e:
+        log(f"Landmark pixel projection failed (non-fatal): {e}")
+
+
 def _bvh_tree_for(mesh):
     from mathutils.bvhtree import BVHTree
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -2048,10 +2076,12 @@ def main():
             Path(args.landmarks_out).write_text(json.dumps(serializable, indent=2))
             log(f"Wrote {len(final_landmarks)} AI+refined landmarks → {args.landmarks_out}")
 
+        write_landmark_pixels_if_requested(args, final_landmarks, mesh_h)
         place_bones_from_landmarks(metarig, final_landmarks, mesh_h)
     else:
         auto_landmarks = detect_landmarks(meshes, pose=detected_pose, reference_height=mesh_h)
         log(f"Mode: AUTO (detected {len(auto_landmarks)} landmarks)")
+        write_landmark_pixels_if_requested(args, auto_landmarks, mesh_h)
         place_bones_from_landmarks(metarig, auto_landmarks, mesh_h)
 
     rig = generate_rig(metarig)
