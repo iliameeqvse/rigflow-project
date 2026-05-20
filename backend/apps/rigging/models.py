@@ -34,6 +34,13 @@ class RiggedModel(models.Model):
     # Output from Blender
     rigged_glb        = models.FileField(upload_to=rig_upload_path, blank=True)
     preview_thumbnail = models.ImageField(upload_to=rig_upload_path, blank=True)
+    landmark_debug_image = models.ImageField(
+        upload_to=rig_upload_path, blank=True,
+        help_text=(
+            "2x2 annotated render showing AI-detected vs final landmark "
+            "positions. Populated only on the llm_vision path."
+        ),
+    )
 
     # Bone data — stored as JSON so it's queryable and editable
     bone_mapping    = models.JSONField(default=dict)   # Rigify→Mixamo name map
