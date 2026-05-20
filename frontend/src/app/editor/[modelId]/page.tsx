@@ -15,7 +15,10 @@ type DetectedPose = "t_pose" | "a_pose" | "arms_down" | "unclear";
 
 export default function EditorPage() {
   const { modelId } = useParams<{ modelId: string }>();
-  const { status, pct, step, glbUrl, error } = useRigStatus(modelId);
+  // Bumped on each successful /rerig-landmarks/ POST so useRigStatus
+  // re-enters its polling effect (the hook stops at the terminal state).
+  const [landmarkRunId, setLandmarkRunId] = useState(0);
+  const { status, pct, step, glbUrl, error } = useRigStatus(modelId, landmarkRunId);
 
   const [tab, setTab]                               = useState<Tab>("view");
   const [playAnimation, setPlayAnimation]           = useState(false);
@@ -98,6 +101,7 @@ export default function EditorPage() {
       setShowLog(false);
 
       setLandmarkQueued(true);
+      setLandmarkRunId((n) => n + 1);   // restart useRigStatus polling
       setLandmarkSubmitting(false);
       setHasEmbedded(null);
       setPlayAnimation(false);
