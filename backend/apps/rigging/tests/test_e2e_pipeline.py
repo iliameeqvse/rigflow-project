@@ -141,3 +141,46 @@ class SanityCascadePipelineTest(TestCase):
         self.assertNotEqual(rig.detection_method, "llm_vision",
                             "Bad AI landmarks should not be used as the final rig")
         self.assertTrue(bool(rig.rigged_glb), "rigged GLB must exist")
+
+
+class LandmarkDebugPhotoTest(TestCase):
+    """The llm_vision path produces a landmark_debug_image."""
+
+    def setUp(self):
+        if not _JOHNNY_FBX.exists():
+            self.skipTest("Test FBX not present")
+        if not Path(settings.BLENDER_EXECUTABLE).is_file():
+            self.skipTest("Blender not installed")
+
+    def test_ai_path_produces_debug_photo(self):
+        from apps.rigging.tasks import _run_rig_pipeline
+        from apps.rigging.landmark_vision.base import VisionResponse
+
+        fixture = json.loads(
+            (FIXTURES / "claude_response_johnny.json").read_text()
+        )
+        fake_provider = MagicMock()
+        fake_provider.detect.return_value = VisionResponse(
+            landmarks=fixture["landmarks"],
+            mesh_object_labels=fixture.get("mesh_objects", {}),
+            notes=fixture.get("notes", ""),
+            raw=fixture,
+        )
+
+        rig = _make_rig(_JOHNNY_FBX)
+        # get_provider is imported locally inside _run_rig_pipeline, so patch
+        # it at the source module.
+        with patch(
+            "apps.rigging.landmark_vision.get_provider", return_value=fake_provider
+        ), patch.dict("os.environ", {"LANDMARK_VISION_PROVIDER": "claude",
+                                     "ANTHROPIC_API_KEY": "sk-fake"}):
+            result = _run_rig_pipeline(str(rig.id))
+
+        rig.refresh_from_db()
+        self.assertEqual(result["status"], "done",
+                         f"Rig should finish done; error: {rig.error_message}")
+        self.assertEqual(rig.status, "done")
+        self.assertTrue(
+            bool(rig.landmark_debug_image),
+            "llm_vision run should populate landmark_debug_image",
+        )
