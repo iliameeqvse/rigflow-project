@@ -145,9 +145,46 @@ def import_model(path, fmt):
         raise ValueError(f"Unsupported format: {fmt}")
 
 
+def _is_rigify_widget_object(obj):
+    """Return True for Rigify custom-shape helper meshes.
+
+    Rigify leaves WGT-* mesh objects in the scene as visual control widgets.
+    They are not character geometry and should never participate in landmark
+    detection, skinning, viewport verification, or export.
+    """
+    name = getattr(obj, "name", "")
+    return (
+        getattr(obj, "type", None) == "MESH"
+        and (name.startswith("WGT-") or name.startswith("WGT_"))
+    )
+
+
 def get_meshes():
     return [o for o in bpy.data.objects
-            if o.type == "MESH" and not o.name.startswith("WGT-")]
+            if o.type == "MESH" and not _is_rigify_widget_object(o)]
+
+
+def remove_rigify_widget_objects():
+    """Remove Rigify WGT-* helper meshes from the scene.
+
+    The final GLB export uses selection, so these widgets usually do not leak
+    into the file. They do remain visible in Blender after a script run,
+    though, which makes the generated rig look covered in marker spheres.
+    After strip_to_deform_bones(), only DEF bones are kept, so deleting the
+    control-shape widgets is safe.
+    """
+    widgets = [o for o in list(bpy.data.objects) if _is_rigify_widget_object(o)]
+    for obj in widgets:
+        mesh_data = obj.data
+        mats = [slot.material for slot in obj.material_slots if slot.material]
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if mesh_data and not mesh_data.users:
+            bpy.data.meshes.remove(mesh_data)
+        for mat in mats:
+            if mat and not mat.users:
+                bpy.data.materials.remove(mat)
+    if widgets:
+        log(f"Removed {len(widgets)} Rigify widget object(s)")
 
 
 def strip_non_meshes():
@@ -1603,6 +1640,40 @@ def pixel_to_world_ray(view_name, px, py, image_size, ortho_scale, world_aabb):
     return origin, direction
 
 
+def world_to_pixel(view_name, world_point, image_size, ortho_scale, world_aabb):
+    """Project a world-space point to pixel coords in an ortho view.
+
+    Algebraic inverse of pixel_to_world_ray — shares the same per-view camera
+    convention. `world_point` is anything indexable as [x, y, z] (a
+    mathutils.Vector or a 3-tuple). Returns [px, py] (floats, top-left origin)
+    or None when the point projects outside the [0, image_size) frame.
+    """
+    (mn, mx) = world_aabb
+    cx = (mn[0] + mx[0]) / 2
+    cy = (mn[1] + mx[1]) / 2
+    cz = (mn[2] + mx[2]) / 2
+    wx, wy, wz = world_point[0], world_point[1], world_point[2]
+
+    if view_name == "front":
+        u, v = wx - cx, wz - cz
+    elif view_name == "back":
+        u, v = cx - wx, wz - cz
+    elif view_name == "left":
+        u, v = cy - wy, wz - cz
+    elif view_name == "right":
+        u, v = wy - cy, wz - cz
+    else:
+        raise ValueError(f"unknown view {view_name!r}")
+
+    if ortho_scale <= 0:
+        return None
+    px = (u / ortho_scale + 0.5) * image_size
+    py = (0.5 - v / ortho_scale) * image_size
+    if px < 0 or px >= image_size or py < 0 or py >= image_size:
+        return None
+    return [px, py]
+
+
 def _bvh_tree_for(mesh):
     from mathutils.bvhtree import BVHTree
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -1959,6 +2030,7 @@ def main():
         log(traceback.format_exc())
 
     strip_to_deform_bones(rig)
+    remove_rigify_widget_objects()
 
     # Prop parenting: non-body meshes get parented to semantically-correct
     # DEF bones when the AI supplied mesh_object_labels.
