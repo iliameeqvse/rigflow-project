@@ -1930,7 +1930,13 @@ def main():
                 "clamped elbow Y onto shoulder/wrist line")
 
         if args.landmarks_out:
-            Path(args.landmarks_out).write_text(json.dumps(final_landmarks, indent=2))
+            # final_landmarks may hold mathutils.Vector values after the
+            # T-pose refine block (the refine helpers return _vec()); coerce
+            # every value to a plain float list so json.dumps can serialise it.
+            serializable = {
+                k: [float(c) for c in v] for k, v in final_landmarks.items()
+            }
+            Path(args.landmarks_out).write_text(json.dumps(serializable, indent=2))
             log(f"Wrote {len(final_landmarks)} AI+refined landmarks → {args.landmarks_out}")
 
         place_bones_from_landmarks(metarig, final_landmarks, mesh_h)

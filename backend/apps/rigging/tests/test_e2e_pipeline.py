@@ -62,9 +62,19 @@ class GeometryOnlyPipelineTest(TestCase):
 
     def test_geometry_only_produces_done_rig(self):
         from apps.rigging.tasks import _run_rig_pipeline
+        from apps.rigging.landmark_vision.none_provider import NoneProvider
 
         rig = _make_rig(_JOHNNY_FBX)
-        result = _run_rig_pipeline(str(rig.id))
+        # Force the geometry-only path regardless of any LANDMARK_VISION_PROVIDER
+        # / ANTHROPIC_API_KEY present in the environment (e.g. a developer's
+        # backend/.env). Without this the test is non-hermetic: a configured
+        # Claude key drives the AI path and detection_method becomes
+        # "llm_vision" instead of the asserted "geometry".
+        with patch(
+            "apps.rigging.landmark_vision.get_provider",
+            return_value=NoneProvider(),
+        ):
+            result = _run_rig_pipeline(str(rig.id))
 
         rig.refresh_from_db()
         self.assertEqual(result["status"], "done")
