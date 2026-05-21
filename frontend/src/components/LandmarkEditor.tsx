@@ -1,7 +1,7 @@
 "use client";
 
 import React, { Suspense, useEffect, useRef, useState, useCallback } from "react";
-import { Canvas, useLoader, useFrame, ThreeEvent } from "@react-three/fiber";
+import { Canvas, useLoader, useFrame } from "@react-three/fiber";
 import {
   OrbitControls, Environment, Grid, Html, useGLTF,
 } from "@react-three/drei";
@@ -139,51 +139,49 @@ function LandmarkSphere({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Clickable model — attaches onClick to every child mesh via traverse
+// Fitted model — normalises scale/position, exposes bounds + the fitted object.
+// No click handler: landmarks are placed by dragging handles, not clicking mesh.
 // ─────────────────────────────────────────────────────────────────────────────
-function ClickableModel({
+function FittedModel({
   object,
-  onMeshClick,
   onBoundsReady,
+  onModelReady,
 }: {
   object: THREE.Object3D;
-  onMeshClick: (pt: THREE.Vector3) => void;
   onBoundsReady: (bbox: THREE.Box3) => void;
+  onModelReady: (object: THREE.Object3D) => void;
 }) {
   useEffect(() => {
-    // Normalise scale/position so landmarks match what the user sees
     autoFitObject(object);
-    // Compute bbox AFTER fitting
     const bbox = new THREE.Box3().setFromObject(object);
     onBoundsReady(bbox);
-
-    // Enable raycasting on every mesh child
     object.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.raycast = THREE.Mesh.prototype.raycast.bind(child);
       }
     });
+    onModelReady(object);
   }, [object]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return (
-    <primitive
-      object={object}
-      onClick={(e: ThreeEvent<MouseEvent>) => {
-        e.stopPropagation();
-        if (e.point) onMeshClick(e.point.clone());
-      }}
-    />
-  );
+  return <primitive object={object} />;
 }
 
-function FBXClickable(props: { url: string; onMeshClick: (pt: THREE.Vector3) => void; onBoundsReady: (b: THREE.Box3) => void }) {
+function FBXModel(props: {
+  url: string;
+  onBoundsReady: (b: THREE.Box3) => void;
+  onModelReady: (o: THREE.Object3D) => void;
+}) {
   const fbx = useLoader(FBXLoader, props.url);
-  return <ClickableModel object={fbx} onMeshClick={props.onMeshClick} onBoundsReady={props.onBoundsReady} />;
+  return <FittedModel object={fbx} onBoundsReady={props.onBoundsReady} onModelReady={props.onModelReady} />;
 }
 
-function GLBClickable(props: { url: string; onMeshClick: (pt: THREE.Vector3) => void; onBoundsReady: (b: THREE.Box3) => void }) {
+function GLBModel(props: {
+  url: string;
+  onBoundsReady: (b: THREE.Box3) => void;
+  onModelReady: (o: THREE.Object3D) => void;
+}) {
   const { scene } = useGLTF(props.url);
-  return <ClickableModel object={scene} onMeshClick={props.onMeshClick} onBoundsReady={props.onBoundsReady} />;
+  return <FittedModel object={scene} onBoundsReady={props.onBoundsReady} onModelReady={props.onModelReady} />;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,8 +196,11 @@ interface LandmarkEditorProps {
 
 export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: LandmarkEditorProps) {
   const [landmarks, setLandmarks]     = useState<LandmarkPositions | null>(null);
-  const [selectedKey, setSelectedKey] = useState<keyof LandmarkPositions | null>("chin");
+  const [selectedKey, setSelectedKey] = useState<keyof LandmarkPositions | null>(null);
   const [bbox, setBbox]               = useState<THREE.Box3 | null>(null);
+  const [model, setModel]             = useState<THREE.Object3D | null>(null);
+
+  const handleModelReady = useCallback((o: THREE.Object3D) => setModel(o), []);
 
   // Fetch landmarks from API on open, fall back to defaultLandmarks if fetch fails.
   // Only runs when rigId is provided; without rigId, handleBoundsReady sets defaults directly.
@@ -220,22 +221,8 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
 
   const handleBoundsReady = useCallback((b: THREE.Box3) => {
     setBbox(b);
-    setSelectedKey("chin");
-    // If no rigId is available, set default landmarks immediately from bbox.
-    // When rigId is present, the useEffect above will set landmarks after the API call.
     if (!rigId) setLandmarks(defaultLandmarks(b));
   }, [rigId]);
-
-  const handleMeshClick = useCallback((pt: THREE.Vector3) => {
-    if (!selectedKey) return;
-    setLandmarks((prev) => prev
-      ? { ...prev, [selectedKey]: [pt.x, pt.y, pt.z] as [number, number, number] }
-      : prev
-    );
-    const keys  = LANDMARKS.map((m) => m.key);
-    const next  = keys[keys.indexOf(selectedKey as typeof keys[number]) + 1] ?? null;
-    setSelectedKey(next);
-  }, [selectedKey]);
 
   const currentMeta = LANDMARKS.find((m) => m.key === selectedKey);
   const ext = glbUrl.split("?")[0].split(".").pop()?.toLowerCase();
@@ -356,8 +343,8 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
 
           <Suspense fallback={<Html center><div style={{ color: "#6c63ff" }}>Loading…</div></Html>}>
             {ext === "fbx" || ext === "obj"
-              ? <FBXClickable url={glbUrl} onMeshClick={handleMeshClick} onBoundsReady={handleBoundsReady} />
-              : <GLBClickable url={glbUrl} onMeshClick={handleMeshClick} onBoundsReady={handleBoundsReady} />
+              ? <FBXModel url={glbUrl} onBoundsReady={handleBoundsReady} onModelReady={handleModelReady} />
+              : <GLBModel url={glbUrl} onBoundsReady={handleBoundsReady} onModelReady={handleModelReady} />
             }
           </Suspense>
 
