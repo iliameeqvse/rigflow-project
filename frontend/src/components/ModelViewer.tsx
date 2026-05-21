@@ -19,6 +19,13 @@ const TARGET_HEIGHT = 2.0;
 // translates it so its feet sit at Y=0 and it's centred on XZ.
 // Works for any unit system (cm, mm, m, inches) and any up-axis.
 // ─────────────────────────────────────────────────────────────────────────────
+// AutoFit wraps the loader's Object3D in a parent group. We mutate the group
+// (which we created locally), not the loader's object — that satisfies
+// `react-hooks/immutability` while still producing a fitted, ground-aligned
+// model. The bounding box is measured on the unwrapped child first, then
+// applied as group-level transforms; SkeletonOverlay reads bone world
+// matrices through this group, so the layout result is identical to the
+// previous direct-mutation approach.
 function AutoFit({
   object,
   onFitted,
@@ -26,37 +33,62 @@ function AutoFit({
   object: THREE.Object3D;
   onFitted?: () => void;
 }) {
+  const groupRef = useRef<THREE.Group>(null);
+  // Latch onFitted via a ref so re-renders that pass a fresh inline callback
+  // don't re-trigger the layout effect (which would loop with the parent's
+  // setFitted call). Updating the ref inside an effect (not during render)
+  // keeps `react-hooks/refs` happy.
+  const onFittedRef = useRef(onFitted);
   useEffect(() => {
-    object.position.set(0, 0, 0);
-    object.scale.set(1, 1, 1);
-    object.updateMatrixWorld(true);
+    onFittedRef.current = onFitted;
+  }, [onFitted]);
+
+
+  useEffect(() => {
+    const group = groupRef.current;
+    if (!group) return;
+
+    group.position.set(0, 0, 0);
+    group.scale.set(1, 1, 1);
+    group.updateMatrixWorld(true);
 
     const box  = new THREE.Box3().setFromObject(object);
     const size = new THREE.Vector3();
     box.getSize(size);
 
-    const tallest = Math.max(size.x, size.y, size.z);
+    // Rigged models are always upright (Blender Z-up → glTF Y-up), so
+    // scale by vertical extent. Falling back to max-axis would shrink
+    // the character to a fraction of the viewport whenever the model
+    // has wide accessories (wings, props, weapons sticking sideways).
+    // Degenerate Y → max-axis fallback so we don't blow up.
+    const usableY = size.y > 0.001;
+    const tallest = usableY ? size.y : Math.max(size.x, size.y, size.z);
     if (tallest === 0) return;
 
     const scale = TARGET_HEIGHT / tallest;
-    object.scale.setScalar(scale);
-    object.updateMatrixWorld(true);
+    group.scale.setScalar(scale);
+    group.updateMatrixWorld(true);
+    
 
-    const box2   = new THREE.Box3().setFromObject(object);
+    const box2   = new THREE.Box3().setFromObject(group);
     const centre = new THREE.Vector3();
     box2.getCenter(centre);
 
-    object.position.x -= centre.x;
-    object.position.z -= centre.z;
-    object.position.y -= box2.min.y;
+    group.position.x -= centre.x;
+    group.position.z -= centre.z;
+    group.position.y -= box2.min.y;
 
     // Final propagation — every bone's matrixWorld is now correct
     // before SkeletonOverlay reads them in its own useEffect
-    object.updateMatrixWorld(true);
-    onFitted?.();
-  }, [object]); // eslint-disable-line react-hooks/exhaustive-deps
+    group.updateMatrixWorld(true);
+    onFittedRef.current?.();
+  }, [object]);
 
-  return <primitive object={object} />;
+  return (
+    <group ref={groupRef}>
+      <primitive object={object} />
+    </group>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,33 +169,35 @@ interface ModelProps {
 function FBXModel({ url, showSkeleton, playAnimation, onReady }: ModelProps) {
   const fbx      = useLoader(FBXLoader, url);
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
-  const waveRef  = useRef<THREE.AnimationMixer | null>(null);
 
   useEffect(() => {
-    const hasEmbedded = (fbx.animations?.length ?? 0) > 0;
-    onReady?.(hasEmbedded);
-    if (hasEmbedded) {
-      mixerRef.current = new THREE.AnimationMixer(fbx);
-      mixerRef.current.clipAction(fbx.animations[0]).play();
-    }
+    onReady?.((fbx.animations?.length ?? 0) > 0);
   }, [fbx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!playAnimation) { waveRef.current?.stopAllAction(); return; }
-    const loader = new FBXLoader();
-    loader.load("/animations/wave.fbx", (w) => {
-      if (!w.animations?.length) return;
-      const m = new THREE.AnimationMixer(fbx);
-      waveRef.current = m;
-      m.clipAction(w.animations[0]).play();
-    });
-    return () => { waveRef.current?.stopAllAction(); };
+    if (!playAnimation) return;
+    let cancelled = false;
+    const startMixer = (clip: THREE.AnimationClip) => {
+      if (cancelled) return;
+      const mixer = new THREE.AnimationMixer(fbx);
+      mixerRef.current = mixer;
+      mixer.clipAction(clip).play();
+    };
+    if (fbx.animations?.length) {
+      startMixer(fbx.animations[0]);
+    } else {
+      new FBXLoader().load("/animations/wave.fbx", (w) => {
+        if (w.animations?.length) startMixer(w.animations[0]);
+      });
+    }
+    return () => {
+      cancelled = true;
+      mixerRef.current?.stopAllAction();
+      mixerRef.current = null;
+    };
   }, [playAnimation, fbx]);
 
-  useFrame((_, dt) => {
-    mixerRef.current?.update(dt);
-    waveRef.current?.update(dt);
-  });
+  useFrame((_, dt) => mixerRef.current?.update(dt));
 
   const [fitted, setFitted] = React.useState(false);
 
@@ -181,33 +215,35 @@ function FBXModel({ url, showSkeleton, playAnimation, onReady }: ModelProps) {
 function GLBModel({ url, showSkeleton, playAnimation, onReady }: ModelProps) {
   const { scene: gltfScene, animations } = useGLTF(url);
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
-  const waveRef  = useRef<THREE.AnimationMixer | null>(null);
 
   useEffect(() => {
-    const hasEmbedded = (animations?.length ?? 0) > 0;
-    onReady?.(hasEmbedded);
-    if (hasEmbedded) {
-      mixerRef.current = new THREE.AnimationMixer(gltfScene);
-      mixerRef.current.clipAction(animations[0]).play();
-    }
+    onReady?.((animations?.length ?? 0) > 0);
   }, [gltfScene]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!playAnimation) { waveRef.current?.stopAllAction(); return; }
-    const loader = new FBXLoader();
-    loader.load("/animations/wave.fbx", (w) => {
-      if (!w.animations?.length) return;
-      const m = new THREE.AnimationMixer(gltfScene);
-      waveRef.current = m;
-      m.clipAction(w.animations[0]).play();
-    });
-    return () => { waveRef.current?.stopAllAction(); };
-  }, [playAnimation, gltfScene]);
+    if (!playAnimation) return;
+    let cancelled = false;
+    const startMixer = (clip: THREE.AnimationClip) => {
+      if (cancelled) return;
+      const mixer = new THREE.AnimationMixer(gltfScene);
+      mixerRef.current = mixer;
+      mixer.clipAction(clip).play();
+    };
+    if (animations?.length) {
+      startMixer(animations[0]);
+    } else {
+      new FBXLoader().load("/animations/wave.fbx", (w) => {
+        if (w.animations?.length) startMixer(w.animations[0]);
+      });
+    }
+    return () => {
+      cancelled = true;
+      mixerRef.current?.stopAllAction();
+      mixerRef.current = null;
+    };
+  }, [playAnimation, gltfScene, animations]);
 
-  useFrame((_, dt) => {
-    mixerRef.current?.update(dt);
-    waveRef.current?.update(dt);
-  });
+  useFrame((_, dt) => mixerRef.current?.update(dt));
 
   const [fitted, setFitted] = React.useState(false);
 

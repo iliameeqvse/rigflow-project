@@ -1,4 +1,5 @@
 import json
+import math
 import threading
 import time as time_module
 from django.contrib.auth import get_user_model
@@ -22,16 +23,47 @@ from apps.throttles import (
 
 User = get_user_model()
 
+# Match the frontend's hard-coded 100 MB cap (frontend/src/app/upload/page.tsx).
+# The check happens before RiggedModel.objects.create() so an oversized upload
+# doesn't leave a half-written file in MEDIA_ROOT.
+MAX_RIG_UPLOAD_MB = 100
+MAX_RIG_UPLOAD_BYTES = MAX_RIG_UPLOAD_MB * 1024 * 1024
+
+LANDMARK_KEYS = (
+    "chin", "groin",
+    "left_shoulder", "right_shoulder",
+    "left_elbow", "right_elbow",
+    "left_wrist", "right_wrist",
+    "left_hip", "right_hip",
+    "left_knee", "right_knee",
+    "left_ankle", "right_ankle",
+)
+
 
 def _get_or_create_demo_profile():
+    """Shared anonymous-only demo profile. Used only when the request
+    is genuinely unauthenticated; the throttle layer rejects anonymous
+    *uploads* before we get here, but anonymous detail/status reads can
+    still hit code paths that need a profile."""
+    from apps.users.models import UserProfile
     user, _ = User.objects.get_or_create(
         email="demo@rigflow.local",
         defaults={"username": "demo"},
     )
-    if not hasattr(user, "profile"):
-        from apps.users.models import UserProfile
-        UserProfile.objects.create(user=user, plan=UserProfile.PLAN_FREE)
-    return user.profile
+    profile, _ = UserProfile.objects.get_or_create(
+        user=user, defaults={"plan": UserProfile.PLAN_FREE},
+    )
+    return profile
+
+
+def _profile_for(user):
+    """Authenticated users always upload to *their own* profile, never the
+    demo one. The post_save signal creates a profile on user creation, but
+    we get_or_create here too so legacy users (created before the signal
+    was wired) don't fall through to demo."""
+    from apps.users.models import UserProfile
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    return profile
 
 
 def _glb_url(request, rig) -> str | None:
@@ -40,6 +72,32 @@ def _glb_url(request, rig) -> str | None:
     base = request.build_absolute_uri(rig.rigged_glb.url)
     ts   = int(rig.updated_at.timestamp()) if rig.updated_at else int(time_module.time())
     return f"{base}?v={ts}"
+
+
+def _validate_landmark_payload(value):
+    if not isinstance(value, dict):
+        return None, "Landmarks must be an object keyed by landmark name."
+
+    missing = [key for key in LANDMARK_KEYS if key not in value]
+    if missing:
+        return None, f"Missing landmark(s): {', '.join(missing)}"
+
+    cleaned = {}
+    for key in LANDMARK_KEYS:
+        point = value[key]
+        if not isinstance(point, (list, tuple)) or len(point) != 3:
+            return None, f"Landmark '{key}' must be a 3-number array."
+        coords = []
+        for coord in point:
+            try:
+                number = float(coord)
+            except (TypeError, ValueError):
+                return None, f"Landmark '{key}' contains a non-numeric coordinate."
+            if not math.isfinite(number):
+                return None, f"Landmark '{key}' contains a non-finite coordinate."
+            coords.append(number)
+        cleaned[key] = coords
+    return cleaned, None
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -54,7 +112,7 @@ class RiggedModelViewSet(ModelViewSet):
         # Status polling AND detail read are public so the editor page can
         # surface bone_mapping / rig_log without 404'ing on rigs that were
         # created via the anonymous demo-profile fallback in `create()`.
-        if self.action in ("status_action", "retrieve"):
+        if self.action in ("status_action", "retrieve", "landmarks"):
             return [AllowAny()]
         return [IsAuthenticated()]
 
@@ -69,7 +127,7 @@ class RiggedModelViewSet(ModelViewSet):
         # initialize_request *after* this runs), so we resolve via action_map.
         method = self.request.method.lower() if getattr(self, "request", None) else None
         action = (getattr(self, "action_map", None) or {}).get(method)
-        if action in ("status_action", "retrieve"):
+        if action in ("status_action", "retrieve", "landmarks"):
             return []
         return super().get_authenticators()
 
@@ -80,12 +138,14 @@ class RiggedModelViewSet(ModelViewSet):
           create           → AnonUploadThrottle + RigUploadThrottle (upload rate)
           rerig / rerig-landmarks → RigUploadThrottle (same as create — triggers Blender)
           status polling   → no throttle (lightweight DB read)
+          landmarks fetch  → no throttle (public read; the editor fetches it
+                             on every load — see permission/auth overrides above)
         """
         if self.action == "create":
             return [AnonUploadThrottle(), RigUploadThrottle()]
         if self.action in ("rerig", "rerig_landmarks"):
             return [RigUploadThrottle()]
-        if self.action == "status_action":
+        if self.action in ("status_action", "landmarks"):
             return []
         return [RigListThrottle()]
 
@@ -93,10 +153,10 @@ class RiggedModelViewSet(ModelViewSet):
         qs = super().get_queryset()
         # Public actions skip the per-user filter so demo-profile rigs and
         # rigs uploaded under a different auth state remain readable.
-        if self.action in ("status_action", "retrieve"):
+        if self.action in ("status_action", "retrieve", "landmarks"):
             return qs
-        if self.request.user.is_authenticated and hasattr(self.request.user, "profile"):
-            return qs.filter(user=self.request.user.profile)
+        if self.request.user.is_authenticated:
+            return qs.filter(user=_profile_for(self.request.user))
         return qs.none()
 
     @extend_schema(
@@ -123,6 +183,12 @@ class RiggedModelViewSet(ModelViewSet):
         ext = (file.name or "").split(".")[-1].lower()
         if ext not in {"fbx", "glb", "gltf", "obj"}:
             return Response({"error": f"Unsupported format: .{ext}."}, status=status.HTTP_400_BAD_REQUEST)
+        if file.size and file.size > MAX_RIG_UPLOAD_BYTES:
+            mb = file.size / (1024 * 1024)
+            return Response(
+                {"error": f"File too large ({mb:.1f} MB). Maximum is {MAX_RIG_UPLOAD_MB} MB."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Manual preview-space Euler rotation in degrees. Form fields arrive
         # as strings; tolerate junk (default 0).
@@ -140,8 +206,8 @@ class RiggedModelViewSet(ModelViewSet):
         rotation_qz = parse_rotation("rotation_qz")
         rotation_qw = parse_rotation("rotation_qw")
 
-        if self.request.user.is_authenticated and hasattr(self.request.user, "profile"):
-            profile = self.request.user.profile
+        if self.request.user.is_authenticated:
+            profile = _profile_for(self.request.user)
         else:
             profile = _get_or_create_demo_profile()
 
@@ -192,11 +258,12 @@ class RiggedModelViewSet(ModelViewSet):
             progress = {"step": "Failed", "pct": 0}
 
         return Response(RigStatusSerializer({
-            "rig_id":         rig.id,
-            "status":         rig.status,
-            "progress":       progress,
-            "rigged_glb_url": _glb_url(request, rig),
-            "error_message":  rig.error_message or "",
+            "rig_id":           rig.id,
+            "status":           rig.status,
+            "progress":         progress,
+            "rigged_glb_url":   _glb_url(request, rig),
+            "error_message":    rig.error_message or "",
+            "detection_method": rig.detection_method or "",
         }).data)
 
     @extend_schema(
@@ -225,9 +292,27 @@ class RiggedModelViewSet(ModelViewSet):
         return Response(self.get_serializer(rig, context={"request": request}).data)
 
     @extend_schema(
+        summary="Get the 14 detected landmarks for the rig editor",
+        description=(
+            "Returns 14 anatomical landmarks (chin, groin, L/R × shoulder, "
+            "elbow, wrist, hip, knee, ankle) in three.js editor space. "
+            "Populated when the rig was generated; if the rig predates the "
+            "feature, returns AABB-default landmarks instead of 404."
+        ),
+    )
+    @action(detail=True, methods=["get"], url_path="landmarks",
+            permission_classes=[AllowAny], authentication_classes=[])
+    def landmarks(self, request, id=None):
+        rig = self.get_object()
+        if rig.landmarks:
+            return Response({"landmarks": rig.landmarks})
+        from .legacy_landmarks import default_landmarks_for_rig
+        return Response({"landmarks": default_landmarks_for_rig(rig)})
+
+    @extend_schema(
         summary="Re-rig using landmark positions",
         description=(
-            "Accepts 6 landmark world positions from the 3D editor and "
+            "Accepts 14 landmark world positions from the 3D editor and "
             "rebuilds the rig with precise bone placement.\n\n"
             "**Throttle:** 10/hour (same as upload — runs Blender).\n\n"
             "Returns 202 immediately; poll `/status/` for progress."
@@ -246,15 +331,14 @@ class RiggedModelViewSet(ModelViewSet):
         except RiggedModel.DoesNotExist:
             return Response({"error": "Rig not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        landmarks = request.data.get("landmarks")
-        if not landmarks:
+        raw_landmarks = request.data.get("landmarks")
+        if not raw_landmarks:
             return Response({"error": "Missing landmarks."}, status=status.HTTP_400_BAD_REQUEST)
 
-        required = {"chin", "left_wrist", "right_wrist", "groin", "left_ankle", "right_ankle"}
-        missing  = required - set(landmarks.keys())
-        if missing:
+        landmarks, validation_error = _validate_landmark_payload(raw_landmarks)
+        if validation_error:
             return Response(
-                {"error": f"Missing landmark(s): {', '.join(missing)}"},
+                {"error": validation_error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

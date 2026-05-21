@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import api from "@/lib/api";
+import { motion, AnimatePresence } from "framer-motion";
+import api, { extractApiError } from "@/lib/api";
 
 interface Category {
   id: number;
@@ -11,27 +12,11 @@ interface Category {
   icon: string;
 }
 
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  background: "#0d0d1a",
-  border: "1px solid #2a2a3d",
-  borderRadius: 8,
-  padding: "0.65rem 0.9rem",
-  color: "#fff",
-  fontSize: "0.95rem",
-  outline: "none",
-  boxSizing: "border-box",
-};
+const inputCls =
+  "w-full rounded-lg border border-border bg-background/60 px-4 py-2.5 text-foreground placeholder:text-muted transition-colors focus:border-accent/50 focus:bg-background focus:outline-none focus:ring-2 focus:ring-accent/15";
 
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: "0.8rem",
-  fontWeight: 600,
-  color: "#a0a0c0",
-  marginBottom: "0.4rem",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-};
+const labelCls =
+  "mb-1.5 block font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground";
 
 export default function UploadAnimationPage() {
   const router = useRouter();
@@ -48,14 +33,13 @@ export default function UploadAnimationPage() {
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
-  // Redirect to login if not authenticated
   useEffect(() => {
     if (!localStorage.getItem("access")) router.replace("/login");
   }, [router]);
 
-  // Load categories
   useEffect(() => {
-    api.get<Category[]>("/animations/categories/")
+    api
+      .get<Category[]>("/animations/categories/")
       .then(({ data }) => setCategories(data))
       .catch(() => {});
   }, []);
@@ -94,200 +78,283 @@ export default function UploadAnimationPage() {
       form.append("file", file);
       form.append("name", name.trim());
       form.append("description", description);
-      form.append("category_slug", categorySlug);   // may be "" — that's fine
+      form.append("category_slug", categorySlug);
       form.append("tags", tags);
       form.append("is_looping", String(isLooping));
       await api.post("/animations/", form);
       router.push("/animations");
-    } catch (err: any) {
-      const data = err.response?.data;
-      let msg = "Upload failed. Please try again.";
-      if (data) {
-        if (data.detail) {
-          msg = data.detail;
-        } else if (typeof data === "object") {
-          const firstKey = Object.keys(data)[0];
-          const val = data[firstKey];
-          msg = Array.isArray(val) ? `${firstKey}: ${val[0]}` : String(val);
-        }
-      }
-      setError(msg);
+    } catch (err: unknown) {
+      setError(extractApiError(err, "Upload failed. Please try again."));
       setUploading(false);
     }
   };
 
+  const ext = file?.name.split(".").pop()?.toUpperCase();
+  const sizeMB = file ? (file.size / (1024 * 1024)).toFixed(1) : null;
+
   return (
-    <div style={{ maxWidth: 620, margin: "4rem auto", padding: "0 1rem" }}>
-      {/* Header */}
-      <div style={{ marginBottom: "2rem" }}>
-        <h1 style={{ fontSize: "1.8rem", fontWeight: 800, marginBottom: "0.4rem" }}>
-          Upload animation
-        </h1>
-        <p style={{ color: "#888" }}>
-          Supports GLB, GLTF, FBX — up to 100 MB. Uploads go live immediately.
-        </p>
+    <div className="relative isolate min-h-[100svh] overflow-hidden pt-32 pb-20">
+      <div className="pointer-events-none absolute inset-0 -z-10">
+        <div className="absolute -top-1/4 left-1/4 h-[55vh] w-[55vh] rounded-full bg-accent/12 blur-[140px] [animation:var(--animate-aurora-2)]" />
       </div>
 
-      {/* Drop zone */}
-      <div
-        onDrop={handleDrop}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onClick={() => fileInput.current?.click()}
-        style={{
-          border: `2px dashed ${file ? "#6c63ff" : dragOver ? "#00d4ff" : "#2a2a3d"}`,
-          borderRadius: 12,
-          padding: "2.5rem",
-          textAlign: "center",
-          cursor: "pointer",
-          background: file
-            ? "rgba(108,99,255,0.05)"
-            : dragOver
-            ? "rgba(0,212,255,0.04)"
-            : "transparent",
-          transition: "all 0.2s",
-          marginBottom: "1.5rem",
-        }}
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+        className="mx-auto w-full max-w-2xl px-6"
       >
-        <div style={{ fontSize: "2.5rem", marginBottom: "0.75rem" }}>
-          {file ? "🎞️" : "⬆️"}
-        </div>
-        {file ? (
-          <>
-            <div style={{ fontWeight: 700, color: "#6c63ff" }}>{file.name}</div>
-            <div style={{ color: "#888", fontSize: "0.85rem", marginTop: "0.25rem" }}>
-              {(file.size / (1024 * 1024)).toFixed(1)} MB ·{" "}
-              <span
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setFile(null);
-                  setName("");
-                }}
-                style={{ color: "#f87171", cursor: "pointer", textDecoration: "underline" }}
-              >
-                Remove
-              </span>
-            </div>
-          </>
-        ) : (
-          <>
-            <div style={{ fontWeight: 600, marginBottom: "0.3rem" }}>
-              Drop your animation file here
-            </div>
-            <div style={{ color: "#888", fontSize: "0.85rem" }}>or click to browse</div>
-          </>
-        )}
-        <input
-          ref={fileInput}
-          type="file"
-          accept=".glb,.gltf,.fbx"
-          style={{ display: "none" }}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) handleFileSelect(f);
-          }}
-        />
-      </div>
-
-      {/* Fields */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-
-        <div>
-          <label style={labelStyle}>Animation name *</label>
-          <input
-            style={inputStyle}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Idle Breathing Loop"
-            maxLength={255}
-          />
-        </div>
-
-        <div>
-          <label style={labelStyle}>Description</label>
-          <textarea
-            style={{ ...inputStyle, resize: "vertical", minHeight: 80 }}
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Optional — describe the animation style or use case"
-          />
-        </div>
-
-        <div>
-          <label style={labelStyle}>Category</label>
-          <select
-            style={{ ...inputStyle, cursor: "pointer" }}
-            value={categorySlug}
-            onChange={(e) => setCategorySlug(e.target.value)}
-          >
-            <option value="">— None —</option>
-            {categories.map((c) => (
-              <option key={c.slug} value={c.slug}>
-                {c.icon} {c.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label style={labelStyle}>Tags</label>
-          <input
-            style={inputStyle}
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="walk, locomotion, cycle  (comma-separated)"
-          />
-        </div>
-
-        {/* Looping toggle */}
-        <label style={{ display: "flex", alignItems: "center", gap: "0.75rem", cursor: "pointer" }}>
-          <div
-            onClick={() => setIsLooping((v) => !v)}
-            style={{
-              width: 44, height: 24, borderRadius: 999,
-              background: isLooping ? "#6c63ff" : "#2a2a3d",
-              position: "relative", transition: "background 0.2s", flexShrink: 0,
-            }}
-          >
-            <div style={{
-              position: "absolute", top: 3,
-              left: isLooping ? 23 : 3,
-              width: 18, height: 18, borderRadius: "50%",
-              background: "#fff", transition: "left 0.2s",
-            }} />
-          </div>
-          <span style={{ fontSize: "0.9rem", color: "#ccc" }}>Looping animation</span>
-        </label>
-
-        {/* Error */}
-        {error && (
-          <div style={{
-            background: "rgba(248,113,113,0.1)",
-            border: "1px solid rgba(248,113,113,0.3)",
-            borderRadius: 8, padding: "0.75rem 1rem",
-            color: "#f87171", fontSize: "0.9rem",
-          }}>
-            {error}
-          </div>
-        )}
+        <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">
+          {"// Contribute / Animations"}
+        </span>
+        <h1 className="mt-3 text-balance text-4xl font-bold tracking-[-0.02em] text-foreground sm:text-5xl">
+          Upload an animation
+        </h1>
+        <p className="mt-3 text-muted-foreground">
+          GLB, GLTF, or FBX — up to 100 MB. Goes live in your team library immediately.
+        </p>
 
         <button
-          onClick={handleSubmit}
-          disabled={uploading || !file || !name.trim()}
-          style={{
-            padding: "0.85rem", borderRadius: 10, border: "none",
-            background: uploading || !file || !name.trim()
-              ? "#2a2a3d"
-              : "linear-gradient(135deg, #6c63ff, #00d4ff)",
-            color: uploading || !file || !name.trim() ? "#666" : "#fff",
-            fontWeight: 700, fontSize: "1rem",
-            cursor: uploading || !file || !name.trim() ? "not-allowed" : "pointer",
-            transition: "all 0.2s",
+          type="button"
+          onDrop={handleDrop}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
           }}
+          onDragLeave={() => setDragOver(false)}
+          onClick={() => fileInput.current?.click()}
+          className={`mt-8 group relative w-full overflow-hidden rounded-2xl border bg-surface/40 px-6 py-9 text-left backdrop-blur transition-all ${
+            file
+              ? "border-accent/50 bg-accent/5"
+              : dragOver
+                ? "border-accent border-dashed bg-accent/10"
+                : "border-dashed border-border hover:border-border-strong hover:bg-surface/60"
+          }`}
         >
-          {uploading ? "Uploading…" : "Upload animation"}
+          {dragOver && (
+            <span className="pointer-events-none absolute inset-0 animate-pulse rounded-2xl ring-2 ring-accent/40" />
+          )}
+          <div className="flex items-center gap-5">
+            <div
+              className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border transition-colors ${
+                file
+                  ? "border-accent/40 bg-accent/15 text-accent"
+                  : "border-border bg-background text-muted-foreground"
+              }`}
+            >
+              {file ? <FilmIcon /> : <UploadIcon />}
+            </div>
+            <div className="min-w-0 flex-1">
+              {file ? (
+                <>
+                  <div className="truncate font-medium text-foreground">{file.name}</div>
+                  <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+                    <span>{ext}</span>
+                    <span className="text-border-strong">·</span>
+                    <span>{sizeMB} MB</span>
+                    <span className="text-border-strong">·</span>
+                    <span
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFile(null);
+                        setName("");
+                      }}
+                      className="cursor-pointer text-danger hover:underline"
+                    >
+                      Remove
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="font-medium text-foreground">
+                    Drop your animation here, or click to browse
+                  </div>
+                  <div className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+                    .glb · .gltf · .fbx
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".glb,.gltf,.fbx"
+            className="sr-only"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleFileSelect(f);
+            }}
+          />
         </button>
-      </div>
+
+        <div className="mt-6 grid gap-5">
+          <div>
+            <label className={labelCls} htmlFor="anim-name">
+              Animation name *
+            </label>
+            <input
+              id="anim-name"
+              className={inputCls}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Idle Breathing Loop"
+              maxLength={255}
+            />
+          </div>
+
+          <div>
+            <label className={labelCls} htmlFor="anim-desc">
+              Description
+            </label>
+            <textarea
+              id="anim-desc"
+              className={`${inputCls} resize-y min-h-[88px]`}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Optional — describe the animation style or use case"
+            />
+          </div>
+
+          <div>
+            <label className={labelCls} htmlFor="anim-cat">
+              Category
+            </label>
+            <select
+              id="anim-cat"
+              className={`${inputCls} cursor-pointer`}
+              value={categorySlug}
+              onChange={(e) => setCategorySlug(e.target.value)}
+            >
+              <option value="">— None —</option>
+              {categories.map((c) => (
+                <option key={c.slug} value={c.slug}>
+                  {c.icon} {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className={labelCls} htmlFor="anim-tags">
+              Tags
+            </label>
+            <input
+              id="anim-tags"
+              className={inputCls}
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder="walk, locomotion, cycle  (comma-separated)"
+            />
+          </div>
+
+          <label className="flex cursor-pointer select-none items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setIsLooping((v) => !v)}
+              role="switch"
+              aria-checked={isLooping}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                isLooping ? "bg-accent" : "bg-border-strong"
+              }`}
+            >
+              <span
+                className={`absolute top-[3px] h-[18px] w-[18px] rounded-full bg-background shadow-md transition-all ${
+                  isLooping ? "left-[24px]" : "left-[3px]"
+                }`}
+              />
+            </button>
+            <span className="text-sm text-muted-foreground">
+              Looping animation
+            </span>
+          </label>
+
+          <AnimatePresence>
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, y: -8, height: 0 }}
+                animate={{ opacity: 1, y: 0, height: "auto" }}
+                exit={{ opacity: 0, y: -8, height: 0 }}
+                className="overflow-hidden"
+                role="alert"
+              >
+                <div className="flex items-start gap-2.5 rounded-lg border border-danger/30 bg-danger/10 px-4 py-2.5 text-sm text-danger">
+                  <AlertIcon />
+                  <span>{error}</span>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <button
+            onClick={handleSubmit}
+            disabled={uploading || !file || !name.trim()}
+            className="group relative mt-2 flex h-12 w-full items-center justify-center overflow-hidden rounded-full bg-accent font-semibold text-background shadow-[var(--shadow-glow-accent)] transition-transform hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-surface disabled:text-muted disabled:shadow-none"
+          >
+            <span className="relative z-10 flex items-center gap-2 text-sm">
+              {uploading ? (
+                <>
+                  <Spinner /> Uploading…
+                </>
+              ) : (
+                <>
+                  Upload animation
+                  <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+                </>
+              )}
+            </span>
+            {!uploading && file && name.trim() && (
+              <span className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/45 to-transparent group-hover:animate-[shimmer_1.1s_ease-in-out]" />
+            )}
+          </button>
+        </div>
+      </motion.div>
     </div>
+  );
+}
+
+function UploadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 16V4" />
+      <path d="M7 9l5-5 5 5" />
+      <path d="M5 20h14" />
+    </svg>
+  );
+}
+function FilmIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="3" y1="9" x2="21" y2="9" />
+      <line x1="3" y1="15" x2="21" y2="15" />
+      <line x1="8" y1="4" x2="8" y2="20" />
+      <line x1="16" y1="4" x2="16" y2="20" />
+    </svg>
+  );
+}
+function ArrowRight({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none">
+      <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function AlertIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="mt-0.5 h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="8" x2="12" y2="13" />
+      <circle cx="12" cy="16.5" r="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+function Spinner() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4 animate-spin" fill="none">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
   );
 }

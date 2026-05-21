@@ -14,7 +14,7 @@ const POLL_INTERVAL_MS = 3000
 const WS_TIMEOUT_MS = 3000
 const MAX_CONSECUTIVE_POLL_FAILURES = 5
 
-export function useRigStatus(rigId: string | null) {
+export function useRigStatus(rigId: string | null, restartKey: number = 0) {
   const [state, setState] = useState<StatusState>({
     status: "pending",
     pct: 0,
@@ -25,6 +25,9 @@ export function useRigStatus(rigId: string | null) {
 
   useEffect(() => {
     if (!rigId) return
+    // A change in restartKey (e.g. after POST /rerig-landmarks/) re-enters
+    // this effect, which restarts polling. The first poll then pulls the
+    // fresh server status (pending → processing → done) into state.
 
     let ws: WebSocket | null = null
     let pollInterval: ReturnType<typeof setInterval> | null = null
@@ -130,7 +133,7 @@ export function useRigStatus(rigId: string | null) {
       stopPolling()
       clearTimeout(wsBackstop)
     }
-  }, [rigId])
+  }, [rigId, restartKey])
 
   return state
 }

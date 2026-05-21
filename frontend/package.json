@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
@@ -14,6 +15,7 @@
     "@tanstack/react-query": "^5.90.21",
     "@types/three": "^0.183.1",
     "axios": "^1.13.6",
+    "framer-motion": "^12.38.0",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -27,6 +29,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.7"
   }
 }

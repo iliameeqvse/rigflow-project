@@ -26,10 +26,13 @@ def _token_response(user) -> dict:
 # ── Register ──────────────────────────────────────────────────────────────────
 @extend_schema(
     summary="Register a new user",
-    description="Create a new account. Returns the user record (no tokens — log in separately).",
+    description=(
+        "Create a new account. Returns a JWT access + refresh pair plus the "
+        "user record so the frontend can sign the user in immediately."
+    ),
     request=RegisterSerializer,
     responses={
-        201: OpenApiResponse(description="User created successfully"),
+        201: OpenApiResponse(description="User created and signed in"),
         400: OpenApiResponse(description="Validation error"),
     },
     examples=[
@@ -37,7 +40,16 @@ def _token_response(user) -> dict:
             "Example request",
             value={"email": "user@example.com", "username": "myname", "password": "securepass123"},
             request_only=True,
-        )
+        ),
+        OpenApiExample(
+            "Example response",
+            value={
+                "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "user": {"id": 1, "email": "user@example.com", "username": "myname"},
+            },
+            response_only=True,
+        ),
     ],
     tags=["Auth"],
 )
@@ -48,10 +60,7 @@ def register_view(request):
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     user = serializer.save()
-    return Response(
-        {"id": user.id, "email": user.email, "username": user.username},
-        status=status.HTTP_201_CREATED,
-    )
+    return Response(_token_response(user), status=status.HTTP_201_CREATED)
 
 
 # ── Login ─────────────────────────────────────────────────────────────────────

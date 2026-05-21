@@ -34,10 +34,52 @@ class RiggedModel(models.Model):
     # Output from Blender
     rigged_glb        = models.FileField(upload_to=rig_upload_path, blank=True)
     preview_thumbnail = models.ImageField(upload_to=rig_upload_path, blank=True)
+    landmark_debug_image = models.ImageField(
+        upload_to=rig_upload_path, blank=True,
+        help_text=(
+            "2x2 annotated render showing AI-detected vs final landmark "
+            "positions. Populated only on the llm_vision path."
+        ),
+    )
 
     # Bone data — stored as JSON so it's queryable and editable
     bone_mapping    = models.JSONField(default=dict)   # Rigify→Mixamo name map
     bone_corrections = models.JSONField(default=dict)  # manual user tweaks
+
+    # Landmarks for rig fitting
+    landmarks = models.JSONField(
+        null=True, blank=True,
+        help_text=(
+            "14 anatomical landmarks (chin, groin, L/R × {shoulder, elbow, "
+            "wrist, hip, knee, ankle}) in three.js editor space, used to fit "
+            "the rigify metarig to non-human-proportion meshes. Populated by "
+            "auto-rig; editable via /landmarks/ + /rerig-landmarks/."
+        ),
+    )
+
+    # Vision-assisted auto-rig audit fields
+    DETECTION_GEOMETRY       = "geometry"
+    DETECTION_LLM_VISION     = "llm_vision"
+    DETECTION_USER_LANDMARKS = "user_landmarks"
+    DETECTION_FAILED         = "failed"
+    DETECTION_METHOD_CHOICES = [
+        ("geometry",       "Geometry only"),
+        ("llm_vision",     "LLM vision + geometry refine"),
+        ("user_landmarks", "User-supplied landmarks"),
+        ("failed",         "AI + geometry both failed; AABB defaults used"),
+    ]
+    detection_method = models.CharField(
+        max_length=24, choices=DETECTION_METHOD_CHOICES,
+        default="geometry", db_index=True,
+        help_text="Which path produced the landmarks attached to this rig.",
+    )
+    vision_response_raw = models.JSONField(
+        null=True, blank=True,
+        help_text=(
+            "Raw validated response from the LLM vision provider, kept for "
+            "debugging and audit. Null when detection_method is not 'llm_vision'."
+        ),
+    )
 
     # Stats
     vertex_count = models.IntegerField(default=0)

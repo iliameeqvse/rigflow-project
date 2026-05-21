@@ -1,12 +1,16 @@
 "use client";
 
-import React, { Suspense, useEffect, useRef, useState, useCallback } from "react";
+import React, { Suspense, useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Canvas, useLoader, useFrame } from "@react-three/fiber";
 import {
-  OrbitControls, Environment, Grid, Html, useGLTF,
+  OrbitControls, Environment, Grid, Html, useGLTF, Line,
 } from "@react-three/drei";
 import { FBXLoader } from "three-stdlib";
 import * as THREE from "three";
+import { type LandmarkSet, LANDMARK_KEYS, getLandmarks } from "@/lib/api";
+import { snapDepthToMeshCenter } from "@/lib/landmarkDepth";
+import { rayToFrontPlane } from "@/lib/landmarkDrag";
+import { SKELETON_EDGES } from "@/lib/landmarkSkeleton";
 
 // ── Target display height matching ModelViewer ────────────────────────────────
 const TARGET_HEIGHT = 2.0;
@@ -33,81 +37,139 @@ function autoFitObject(object: THREE.Object3D) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export interface LandmarkPositions {
-  chin:        [number, number, number];
-  left_wrist:  [number, number, number];
-  right_wrist: [number, number, number];
-  groin:       [number, number, number];
-  left_ankle:  [number, number, number];
-  right_ankle: [number, number, number];
-}
+// LandmarkPositions is now the full 14-key set from the API types
+export type LandmarkPositions = LandmarkSet;
 
-const LANDMARK_META = [
-  { key: "chin"        as const, label: "Chin",        color: "#ff4444", instruction: "Click the bottom of the chin / top of neck" },
-  { key: "left_wrist"  as const, label: "Left Wrist",  color: "#ff8c00", instruction: "Click the character's LEFT wrist (your right)" },
-  { key: "right_wrist" as const, label: "Right Wrist", color: "#ffd700", instruction: "Click the character's RIGHT wrist (your left)" },
-  { key: "groin"       as const, label: "Groin",       color: "#00c48c", instruction: "Click the crotch point between the legs" },
-  { key: "left_ankle"  as const, label: "Left Ankle",  color: "#00aaff", instruction: "Click the character's LEFT ankle" },
-  { key: "right_ankle" as const, label: "Right Ankle", color: "#aa44ff", instruction: "Click the character's RIGHT ankle" },
+const LANDMARKS = [
+  // Head — yellow
+  { key: "chin"           as const, label: "Chin",           color: "#ffd166", group: "Head"  },
+  // Torso — green
+  { key: "groin"          as const, label: "Groin",          color: "#06d6a0", group: "Torso" },
+  // Left arm — blue
+  { key: "left_shoulder"  as const, label: "Left Shoulder",  color: "#118ab2", group: "Arm L" },
+  { key: "left_elbow"     as const, label: "Left Elbow",     color: "#118ab2", group: "Arm L" },
+  { key: "left_wrist"     as const, label: "Left Wrist",     color: "#118ab2", group: "Arm L" },
+  // Right arm — same blue (mirror; the group label disambiguates)
+  { key: "right_shoulder" as const, label: "Right Shoulder", color: "#118ab2", group: "Arm R" },
+  { key: "right_elbow"    as const, label: "Right Elbow",    color: "#118ab2", group: "Arm R" },
+  { key: "right_wrist"    as const, label: "Right Wrist",    color: "#118ab2", group: "Arm R" },
+  // Left leg — pink
+  { key: "left_hip"       as const, label: "Left Hip",       color: "#ef476f", group: "Leg L" },
+  { key: "left_knee"      as const, label: "Left Knee",      color: "#ef476f", group: "Leg L" },
+  { key: "left_ankle"     as const, label: "Left Ankle",     color: "#ef476f", group: "Leg L" },
+  // Right leg — pink
+  { key: "right_hip"      as const, label: "Right Hip",      color: "#ef476f", group: "Leg R" },
+  { key: "right_knee"     as const, label: "Right Knee",     color: "#ef476f", group: "Leg R" },
+  { key: "right_ankle"    as const, label: "Right Ankle",    color: "#ef476f", group: "Leg R" },
 ];
+
+const GROUPS = ["Head", "Torso", "Arm L", "Arm R", "Leg L", "Leg R"] as const;
+type Group = typeof GROUPS[number];
 
 function defaultLandmarks(bbox: THREE.Box3): LandmarkPositions {
   const size = new THREE.Vector3();
   bbox.getSize(size);
-  const cx  = (bbox.min.x + bbox.max.x) / 2;
-  const cy  = (bbox.min.y + bbox.max.y) / 2;
-  const h   = size.z;
-  const w   = size.x;
+  const cx = (bbox.min.x + bbox.max.x) / 2;
+  const cz = (bbox.min.z + bbox.max.z) / 2;
+  const h  = size.y;
+  const w  = size.x;
   return {
-    chin:        [cx,          cy, bbox.min.z + h * 0.86],
-    left_wrist:  [cx - w * 0.52, cy, bbox.min.z + h * 0.44],
-    right_wrist: [cx + w * 0.52, cy, bbox.min.z + h * 0.44],
-    groin:       [cx,          cy, bbox.min.z + h * 0.51],
-    left_ankle:  [cx - w * 0.14, cy, bbox.min.z + h * 0.04],
-    right_ankle: [cx + w * 0.14, cy, bbox.min.z + h * 0.04],
+    chin:           [cx,             bbox.min.y + h * 0.92, cz],
+    groin:          [cx,             bbox.min.y + h * 0.50, cz],
+    left_shoulder:  [cx + w * 0.18,  bbox.min.y + h * 0.82, cz],
+    right_shoulder: [cx - w * 0.18,  bbox.min.y + h * 0.82, cz],
+    left_elbow:     [cx + w * 0.36,  bbox.min.y + h * 0.82, cz + 0.05],
+    right_elbow:    [cx - w * 0.36,  bbox.min.y + h * 0.82, cz + 0.05],
+    left_wrist:     [cx + w * 0.52,  bbox.min.y + h * 0.82, cz],
+    right_wrist:    [cx - w * 0.52,  bbox.min.y + h * 0.82, cz],
+    left_hip:       [cx + w * 0.10,  bbox.min.y + h * 0.50, cz],
+    right_hip:      [cx - w * 0.10,  bbox.min.y + h * 0.50, cz],
+    left_knee:      [cx + w * 0.10,  bbox.min.y + h * 0.25, cz],
+    right_knee:     [cx - w * 0.10,  bbox.min.y + h * 0.25, cz],
+    left_ankle:     [cx + w * 0.10,  bbox.min.y,            cz],
+    right_ankle:    [cx - w * 0.10,  bbox.min.y,            cz],
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Landmark sphere
+// Draggable landmark handle. Pointer-down grabs it; pointer-move drags it in the
+// front plane; pointer-up drops it and triggers a depth snap in the parent.
 // ─────────────────────────────────────────────────────────────────────────────
-function LandmarkSphere({
-  position, color, selected, onSelect, label,
+function DraggableLandmark({
+  landmarkKey, position, color, label, depthLost, pulsing,
+  onDragStart, onDrag, onDragEnd,
 }: {
+  landmarkKey: keyof LandmarkPositions;
   position: [number, number, number];
   color: string;
-  selected: boolean;
-  onSelect: () => void;
   label: string;
+  depthLost: boolean;
+  pulsing: boolean;
+  onDragStart: (key: keyof LandmarkPositions) => void;
+  onDrag: (key: keyof LandmarkPositions, x: number, y: number) => void;
+  onDragEnd: (key: keyof LandmarkPositions, x: number, y: number) => void;
 }) {
   const ref = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   useFrame(() => {
-    if (ref.current) ref.current.scale.setScalar(selected ? 1.4 : hovered ? 1.2 : 1.0);
+    if (!ref.current) return;
+    const base = dragging ? 1.5 : hovered ? 1.2 : 1.0;
+    ref.current.scale.setScalar(base * (pulsing ? 1.5 : 1.0));
   });
 
   return (
     <group position={position}>
       <mesh
         ref={ref}
-        onClick={(e) => { e.stopPropagation(); onSelect(); }}
-        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = "pointer"; }}
-        onPointerOut={() => { setHovered(false); document.body.style.cursor = "default"; }}
         renderOrder={999}
+        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = "grab"; }}
+        onPointerOut={() => { setHovered(false); if (!dragging) document.body.style.cursor = "default"; }}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          (e.target as Element).setPointerCapture(e.pointerId);
+          setDragging(true);
+          onDragStart(landmarkKey);
+          document.body.style.cursor = "grabbing";
+        }}
+        onPointerMove={(e) => {
+          if (!dragging) return;
+          e.stopPropagation();
+          const pt = rayToFrontPlane(e.ray);
+          if (pt) onDrag(landmarkKey, pt.x, pt.y);
+        }}
+        onPointerUp={(e) => {
+          if (!dragging) return;
+          e.stopPropagation();
+          (e.target as Element).releasePointerCapture(e.pointerId);
+          setDragging(false);
+          document.body.style.cursor = "grab";
+          const pt = rayToFrontPlane(e.ray);
+          onDragEnd(landmarkKey, pt ? pt.x : position[0], pt ? pt.y : position[1]);
+        }}
       >
-        <sphereGeometry args={[0.025, 16, 16]} />
+        <sphereGeometry args={[0.03, 16, 16]} />
         <meshStandardMaterial
-          color={selected ? "#ffffff" : color}
-          emissive={selected ? color : hovered ? color : "#000"}
-          emissiveIntensity={selected ? 0.9 : hovered ? 0.4 : 0}
+          color={dragging ? "#ffffff" : color}
+          emissive={depthLost ? "#ffae00" : dragging || hovered ? color : "#000"}
+          emissiveIntensity={depthLost ? 0.8 : dragging ? 0.9 : hovered ? 0.4 : 0}
           depthTest={false}
         />
       </mesh>
+
+      {/* amber ring: depth snap could not find the mesh under this handle */}
+      {depthLost && (
+        <mesh renderOrder={998}>
+          <ringGeometry args={[0.045, 0.062, 24]} />
+          <meshBasicMaterial color="#ffae00" side={THREE.DoubleSide} depthTest={false} transparent opacity={0.85} />
+        </mesh>
+      )}
+
       <Html distanceFactor={6} style={{ pointerEvents: "none" }}>
         <div style={{
-          background: selected ? color : "rgba(0,0,0,0.75)",
-          color: "#fff", padding: "2px 7px", borderRadius: 4,
+          background: pulsing ? "#fff" : "rgba(0,0,0,0.75)",
+          color: pulsing ? "#000" : "#fff", padding: "2px 7px", borderRadius: 4,
           fontSize: 10, whiteSpace: "nowrap", fontWeight: 700,
           border: `1px solid ${color}`, userSelect: "none",
         }}>
@@ -119,51 +181,129 @@ function LandmarkSphere({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Clickable model — attaches onClick to every child mesh via traverse
+// Fitted model — normalises scale/position, exposes bounds + the fitted object.
+// No click handler: landmarks are placed by dragging handles, not clicking mesh.
 // ─────────────────────────────────────────────────────────────────────────────
-function ClickableModel({
+function FittedModel({
   object,
-  onMeshClick,
   onBoundsReady,
+  onModelReady,
 }: {
   object: THREE.Object3D;
-  onMeshClick: (pt: THREE.Vector3) => void;
   onBoundsReady: (bbox: THREE.Box3) => void;
+  onModelReady: (object: THREE.Object3D) => void;
 }) {
   useEffect(() => {
-    // Normalise scale/position so landmarks match what the user sees
     autoFitObject(object);
-    // Compute bbox AFTER fitting
     const bbox = new THREE.Box3().setFromObject(object);
     onBoundsReady(bbox);
-
-    // Enable raycasting on every mesh child
     object.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.raycast = THREE.Mesh.prototype.raycast.bind(child);
       }
     });
+    onModelReady(object);
   }, [object]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  return <primitive object={object} />;
+}
+
+function FBXModel(props: {
+  url: string;
+  onBoundsReady: (b: THREE.Box3) => void;
+  onModelReady: (o: THREE.Object3D) => void;
+}) {
+  const fbx = useLoader(FBXLoader, props.url);
+  return <FittedModel object={fbx} onBoundsReady={props.onBoundsReady} onModelReady={props.onModelReady} />;
+}
+
+function GLBModel(props: {
+  url: string;
+  onBoundsReady: (b: THREE.Box3) => void;
+  onModelReady: (o: THREE.Object3D) => void;
+}) {
+  const { scene } = useGLTF(props.url);
+  return <FittedModel object={scene} onBoundsReady={props.onBoundsReady} onModelReady={props.onModelReady} />;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live skeleton overlay — thin always-on-top lines between landmark handles.
+// A placement guide, not the final DEF rig.
+// ─────────────────────────────────────────────────────────────────────────────
+function Skeleton({ landmarks }: { landmarks: LandmarkPositions }) {
   return (
-    <primitive
-      object={object}
-      onClick={(e: any) => {
-        e.stopPropagation();
-        if (e.point) onMeshClick(e.point.clone());
-      }}
-    />
+    <>
+      {SKELETON_EDGES.map(([a, b]) => (
+        <Line
+          key={`${a}-${b}`}
+          points={[landmarks[a], landmarks[b]]}
+          color="#00e5ff"
+          lineWidth={2}
+          depthTest={false}
+          renderOrder={997}
+        />
+      ))}
+    </>
   );
 }
 
-function FBXClickable(props: { url: string; onMeshClick: (pt: THREE.Vector3) => void; onBoundsReady: (b: THREE.Box3) => void }) {
-  const fbx = useLoader(FBXLoader, props.url);
-  return <ClickableModel object={fbx} onMeshClick={props.onMeshClick} onBoundsReady={props.onBoundsReady} />;
+// ─────────────────────────────────────────────────────────────────────────────
+// Non-interactive 3/4 preview. Clones the fitted model as a translucent "ghost"
+// so the user can confirm the auto-snapped joints sit inside the limb volume.
+// ─────────────────────────────────────────────────────────────────────────────
+function GhostBody({ source }: { source: THREE.Object3D }) {
+  const ghost = useMemo(() => {
+    const clone = source.clone(true);
+    clone.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.material = new THREE.MeshStandardMaterial({
+          color: "#6c63ff", transparent: true, opacity: 0.16,
+          depthWrite: false, side: THREE.DoubleSide,
+        });
+      }
+    });
+    return clone;
+  }, [source]);
+  return <primitive object={ghost} />;
 }
 
-function GLBClickable(props: { url: string; onMeshClick: (pt: THREE.Vector3) => void; onBoundsReady: (b: THREE.Box3) => void }) {
-  const { scene } = useGLTF(props.url);
-  return <ClickableModel object={scene} onMeshClick={props.onMeshClick} onBoundsReady={props.onBoundsReady} />;
+function GhostPreview({
+  model, landmarks,
+}: {
+  model: THREE.Object3D | null;
+  landmarks: LandmarkPositions;
+}) {
+  return (
+    <div style={{
+      position: "absolute", right: 10, bottom: 10,
+      width: 180, height: 240, borderRadius: 10, overflow: "hidden",
+      border: "1px solid #2a2a3d", background: "rgba(8,8,18,0.92)",
+      pointerEvents: "none", zIndex: 10,
+    }}>
+      <div style={{
+        position: "absolute", top: 4, left: 8, zIndex: 1,
+        fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", color: "#6c63ff",
+      }}>
+        DEPTH PREVIEW
+      </div>
+      <Canvas
+        orthographic
+        camera={{ position: [3, 1.6, 3], zoom: 95, near: 0.01, far: 100 }}
+        onCreated={({ camera }) => camera.lookAt(0, 1, 0)}
+      >
+        <ambientLight intensity={0.8} />
+        <directionalLight position={[5, 10, 5]} intensity={0.8} />
+        {model && <GhostBody source={model} />}
+        <Skeleton landmarks={landmarks} />
+        {LANDMARKS.map(({ key, color }) => (
+          <mesh key={key} position={landmarks[key]} renderOrder={999}>
+            <sphereGeometry args={[0.035, 12, 12]} />
+            <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} depthTest={false} />
+          </mesh>
+        ))}
+      </Canvas>
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -171,33 +311,139 @@ function GLBClickable(props: { url: string; onMeshClick: (pt: THREE.Vector3) => 
 // ─────────────────────────────────────────────────────────────────────────────
 interface LandmarkEditorProps {
   glbUrl: string;
+  rigId?: string;
   onSubmit: (landmarks: LandmarkPositions) => void;
   submitting?: boolean;
 }
 
-export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: LandmarkEditorProps) {
+export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: LandmarkEditorProps) {
   const [landmarks, setLandmarks]     = useState<LandmarkPositions | null>(null);
-  const [selectedKey, setSelectedKey] = useState<keyof LandmarkPositions | null>("chin");
+  const [selectedKey, setSelectedKey] = useState<keyof LandmarkPositions | null>(null);
   const [bbox, setBbox]               = useState<THREE.Box3 | null>(null);
+  const [model, setModel]             = useState<THREE.Object3D | null>(null);
+
+  const handleModelReady = useCallback((o: THREE.Object3D) => setModel(o), []);
+
+  const [depthLost, setDepthLost] = useState<Record<string, boolean>>({});
+  const [pulseKey, setPulseKey]   = useState<keyof LandmarkPositions | null>(null);
+
+  const handleDragStart = useCallback((key: keyof LandmarkPositions) => {
+    setSelectedKey(key);
+  }, []);
+
+  // During a drag only x/y move; depth is left alone until the drop.
+  const handleDrag = useCallback((key: keyof LandmarkPositions, x: number, y: number) => {
+    setLandmarks((prev) => prev
+      ? { ...prev, [key]: [x, y, prev[key][2]] as [number, number, number] }
+      : prev);
+  }, []);
+
+  // On drop, raycast through the mesh and centre the handle's depth.
+  const handleDragEnd = useCallback((key: keyof LandmarkPositions, x: number, y: number) => {
+    const fallbackZ = landmarks?.[key]?.[2] ?? 0;
+    const snap = model
+      ? snapDepthToMeshCenter(model, x, y, fallbackZ)
+      : { z: fallbackZ, hit: true };
+    setLandmarks((prev) => prev
+      ? { ...prev, [key]: [x, y, snap.z] as [number, number, number] }
+      : prev);
+    setDepthLost((d) => ({ ...d, [key]: !snap.hit }));
+  }, [landmarks, model]);
+
+  // Arrow keys nudge the selected handle (Shift = coarse); depth re-snaps after.
+  useEffect(() => {
+    if (!selectedKey) return;
+    const onKey = (e: KeyboardEvent) => {
+      const step = e.shiftKey ? 0.05 : 0.01;
+      let dx = 0, dy = 0;
+      if (e.key === "ArrowLeft")       dx = -step;
+      else if (e.key === "ArrowRight") dx =  step;
+      else if (e.key === "ArrowUp")    dy =  step;
+      else if (e.key === "ArrowDown")  dy = -step;
+      else return;
+      e.preventDefault();
+      setLandmarks((prev) => {
+        if (!prev) return prev;
+        const nx = prev[selectedKey][0] + dx;
+        const ny = prev[selectedKey][1] + dy;
+        const z  = model
+          ? snapDepthToMeshCenter(model, nx, ny, prev[selectedKey][2]).z
+          : prev[selectedKey][2];
+        return { ...prev, [selectedKey]: [nx, ny, z] as [number, number, number] };
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedKey, model]);
+
+  const landmarkSource  = useRef<"api" | "default" | null>(null);
+  const defaultsSnapped = useRef(false);
+
+  // Re-centre the depth of all 14 handles at their current (x, y).
+  const snapAllDepths = useCallback(() => {
+    if (!model) return;
+    setLandmarks((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      const lost: Record<string, boolean> = {};
+      for (const k of LANDMARK_KEYS) {
+        const [x, y, z] = prev[k];
+        const snap = snapDepthToMeshCenter(model, x, y, z);
+        next[k] = [x, y, snap.z];
+        lost[k] = !snap.hit;
+      }
+      setDepthLost(lost);
+      return next;
+    });
+  }, [model]);
+
+  // Fetch landmarks from API on open, fall back to defaultLandmarks if fetch fails.
+  // Only runs when rigId is provided; without rigId, handleBoundsReady sets defaults directly.
+  useEffect(() => {
+    if (!rigId || !bbox) return;
+    let cancelled = false;
+    getLandmarks(rigId)
+      .then(({ data }) => {
+        if (cancelled) return;
+        setLandmarks(data.landmarks);
+        landmarkSource.current = "api";
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLandmarks(defaultLandmarks(bbox));
+        landmarkSource.current = "default";
+      });
+    return () => { cancelled = true; };
+  }, [rigId, bbox]);
+
+  // Default landmarks are known depth-flat (all at the mesh z-centre). Snap them
+  // once the model is available. API-detected landmarks are left untouched.
+  useEffect(() => {
+    if (defaultsSnapped.current) return;
+    if (landmarkSource.current !== "default") return;
+    if (!model || !landmarks) return;
+    defaultsSnapped.current = true;
+    // One-shot: the `defaultsSnapped` ref guarantees this runs at most once, so
+    // there is no setState loop despite snapAllDepths updating landmark state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    snapAllDepths();
+  }, [model, landmarks, snapAllDepths]);
 
   const handleBoundsReady = useCallback((b: THREE.Box3) => {
     setBbox(b);
-    setLandmarks(defaultLandmarks(b));
-    setSelectedKey("chin");
+    if (!rigId) {
+      setLandmarks(defaultLandmarks(b));
+      landmarkSource.current = "default";
+    }
+  }, [rigId]);
+
+  const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleSelectRow = useCallback((key: keyof LandmarkPositions) => {
+    setSelectedKey(key);
+    setPulseKey(key);
+    if (pulseTimer.current) clearTimeout(pulseTimer.current);
+    pulseTimer.current = setTimeout(() => setPulseKey(null), 700);
   }, []);
-
-  const handleMeshClick = useCallback((pt: THREE.Vector3) => {
-    if (!selectedKey) return;
-    setLandmarks((prev) => prev
-      ? { ...prev, [selectedKey]: [pt.x, pt.y, pt.z] as [number, number, number] }
-      : prev
-    );
-    const keys  = LANDMARK_META.map((m) => m.key);
-    const next  = keys[keys.indexOf(selectedKey) + 1] ?? null;
-    setSelectedKey(next);
-  }, [selectedKey]);
-
-  const currentMeta = LANDMARK_META.find((m) => m.key === selectedKey);
   const ext = glbUrl.split("?")[0].split(".").pop()?.toLowerCase();
 
   return (
@@ -209,44 +455,48 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
         background: "#0d0d1a", border: "1px solid #2a2a3d",
         borderRadius: 12, padding: "1rem",
         display: "flex", flexDirection: "column", gap: "0.55rem",
+        maxHeight: 560, overflowY: "auto",
       }}>
         <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#888", letterSpacing: "0.08em" }}>
-          LANDMARK PLACEMENT
+          LANDMARKS
         </div>
-
-        {/* Current instruction */}
         <div style={{
-          background: currentMeta ? "rgba(108,99,255,0.08)" : "rgba(42,42,61,0.4)",
-          border: `1px solid ${currentMeta ? "rgba(108,99,255,0.35)" : "#2a2a3d"}`,
-          borderRadius: 8, padding: "0.6rem 0.75rem",
-          fontSize: "0.8rem", color: "#ccc", minHeight: 44,
+          background: "rgba(108,99,255,0.08)", border: "1px solid rgba(108,99,255,0.35)",
+          borderRadius: 8, padding: "0.6rem 0.75rem", fontSize: "0.78rem", color: "#bbb",
         }}>
-          {currentMeta
-            ? <><span style={{ color: currentMeta.color, fontWeight: 700 }}>{currentMeta.label}:</span><br />{currentMeta.instruction}</>
-            : <span style={{ color: "#00c48c" }}>✅ All placed — hit Apply!</span>
-          }
+          Drag any handle to reposition it. Depth is set automatically on release.
+          Click a row to locate its handle.
         </div>
 
-        {/* Landmark list */}
-        {LANDMARK_META.map(({ key, label, color }) => {
-          const placed = landmarks !== null;
-          const active = selectedKey === key;
-          return (
-            <button key={key} onClick={() => setSelectedKey(key)} style={{
-              display: "flex", alignItems: "center", gap: "0.55rem",
-              padding: "0.45rem 0.7rem", borderRadius: 7,
-              border: `1px solid ${active ? color : "#2a2a3d"}`,
-              background: active ? `${color}18` : "transparent",
-              color: "#ccc", cursor: "pointer", fontSize: "0.84rem",
-              fontWeight: active ? 700 : 400, textAlign: "left",
-              transition: "all 0.15s",
-            }}>
-              <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }} />
-              {label}
-              {placed && <span style={{ marginLeft: "auto", color: "#00c48c", fontSize: 11 }}>✓</span>}
-            </button>
-          );
-        })}
+        {/* Grouped landmark list */}
+        {GROUPS.map((group: Group) => (
+          <section key={group} style={{ marginBottom: ".75rem" }}>
+            <h4 style={{
+              color: "#888", fontSize: ".75rem", textTransform: "uppercase",
+              letterSpacing: ".05em", margin: "0 0 .35rem", fontWeight: 700,
+            }}>{group}</h4>
+            <div style={{ display: "flex", flexDirection: "column", gap: ".25rem" }}>
+              {LANDMARKS.filter((l) => l.group === group).map(({ key, label, color }) => {
+                const active = selectedKey === key;
+                return (
+                  <button key={key} onClick={() => handleSelectRow(key)} style={{
+                    display: "flex", alignItems: "center", gap: "0.55rem",
+                    padding: "0.45rem 0.7rem", borderRadius: 7,
+                    border: `1px solid ${active ? color : "#2a2a3d"}`,
+                    background: active ? `${color}18` : "transparent",
+                    color: "#ccc", cursor: "pointer", fontSize: "0.84rem",
+                    fontWeight: active ? 700 : 400, textAlign: "left",
+                    transition: "all 0.15s",
+                  }}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }} />
+                    {label}
+                    {depthLost[key] && <span style={{ marginLeft: "auto", color: "#ffae00", fontSize: 11 }} title="Depth not found — drag back over the mesh">⚠</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        ))}
 
         <div style={{ flex: 1 }} />
 
@@ -261,7 +511,20 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
             fontSize: "0.88rem",
           }}
         >
-          {submitting ? "Applying…" : "✅ Apply rig"}
+          {submitting ? "Applying…" : "Apply rig"}
+        </button>
+
+        <button
+          onClick={snapAllDepths}
+          disabled={!landmarks || !model}
+          style={{
+            padding: "0.5rem", borderRadius: 7,
+            border: "1px solid rgba(108,99,255,0.4)", background: "rgba(108,99,255,0.1)",
+            color: !landmarks || !model ? "#555" : "#9b96ff",
+            cursor: !landmarks || !model ? "not-allowed" : "pointer", fontSize: "0.8rem", fontWeight: 700,
+          }}
+        >
+          Snap all depths
         </button>
 
         <button
@@ -272,59 +535,60 @@ export function LandmarkEditor({ glbUrl, onSubmit, submitting = false }: Landmar
             color: "#666", cursor: "pointer", fontSize: "0.78rem",
           }}
         >
-          ↺ Reset to defaults
+          Reset to defaults
         </button>
       </div>
 
       {/* ── Canvas ── */}
       <div style={{
-        flex: 1, height: 560,
+        flex: 1, height: 560, position: "relative",
         background: "linear-gradient(135deg,#0a0a14,#0d0d20)",
         borderRadius: 12, overflow: "hidden",
-        border: `2px solid ${selectedKey ? "rgba(108,99,255,0.5)" : "#2a2a3d"}`,
-        cursor: selectedKey ? "crosshair" : "default",
-        transition: "border-color 0.2s",
+        border: "2px solid #2a2a3d",
       }}>
-        {/* Crosshair hint */}
-        {selectedKey && currentMeta && (
-          <div style={{
-            position: "absolute", top: 8, left: "50%", transform: "translateX(-50%)",
-            background: `${currentMeta.color}22`, border: `1px solid ${currentMeta.color}`,
-            borderRadius: 20, padding: "4px 12px", fontSize: 11, color: currentMeta.color,
-            fontWeight: 700, pointerEvents: "none", zIndex: 10, whiteSpace: "nowrap",
-          }}>
-            🎯 Click on the model to place: {currentMeta.label}
-          </div>
-        )}
-
-        <Canvas camera={{ position: [0, 0.9, 3.2], fov: 45 }}>
+        <Canvas orthographic camera={{ position: [0, 1, 4], zoom: 220, near: 0.01, far: 100 }}>
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 10, 5]} intensity={1} />
           <pointLight position={[-5, 5, -5]} intensity={0.3} color="#6c63ff" />
           <Environment preset="studio" />
 
-          <Suspense fallback={<Html center><div style={{ color: "#6c63ff" }}>⚙️ Loading…</div></Html>}>
+          <Suspense fallback={<Html center><div style={{ color: "#6c63ff" }}>Loading…</div></Html>}>
             {ext === "fbx" || ext === "obj"
-              ? <FBXClickable url={glbUrl} onMeshClick={handleMeshClick} onBoundsReady={handleBoundsReady} />
-              : <GLBClickable url={glbUrl} onMeshClick={handleMeshClick} onBoundsReady={handleBoundsReady} />
+              ? <FBXModel url={glbUrl} onBoundsReady={handleBoundsReady} onModelReady={handleModelReady} />
+              : <GLBModel url={glbUrl} onBoundsReady={handleBoundsReady} onModelReady={handleModelReady} />
             }
           </Suspense>
 
           {/* Landmark spheres */}
-          {landmarks && LANDMARK_META.map(({ key, label, color }) => (
-            <LandmarkSphere
+          {landmarks && <Skeleton landmarks={landmarks} />}
+
+          {landmarks && LANDMARKS.map(({ key, label, color }) => (
+            <DraggableLandmark
               key={key}
+              landmarkKey={key}
               position={landmarks[key]}
               color={color}
-              selected={selectedKey === key}
               label={label}
-              onSelect={() => setSelectedKey(key)}
+              depthLost={!!depthLost[key]}
+              pulsing={pulseKey === key}
+              onDragStart={handleDragStart}
+              onDrag={handleDrag}
+              onDragEnd={handleDragEnd}
             />
           ))}
 
           <Grid position={[0, 0, 0]} args={[10, 10]} cellColor="#1a1a2e" sectionColor="#2a2a3d" fadeDistance={12} infiniteGrid />
-          <OrbitControls makeDefault minDistance={0.3} maxDistance={10} />
+          <OrbitControls
+            makeDefault
+            target={[0, 1, 0]}
+            enableRotate={false}
+            enablePan={false}
+            minZoom={80}
+            maxZoom={600}
+          />
         </Canvas>
+
+        {landmarks && <GhostPreview model={model} landmarks={landmarks} />}
       </div>
     </div>
   );

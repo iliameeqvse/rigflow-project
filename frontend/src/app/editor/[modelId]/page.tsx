@@ -2,42 +2,23 @@
 
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useRigStatus } from "@/hooks/useRigStatus";
 import { ModelViewer } from "@/components/ModelViewer";
 import { LandmarkEditor, LandmarkPositions } from "@/components/LandmarkEditor";
 import { AnimationPlayer } from "@/components/AnimationPlayer";
-import api from "@/lib/api";
+import api, { extractApiError } from "@/lib/api";
+import { isAxiosError } from "axios";
 
 type Tab = "view" | "edit-rig" | "play";
-
-function Btn({
-  onClick, active, disabled, color = "#888", children,
-}: {
-  onClick: () => void; active?: boolean; disabled?: boolean;
-  color?: string; children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        padding: "0.6rem 1.1rem", borderRadius: 8,
-        border: `1px solid ${active ? color : "#2a2a3d"}`,
-        background: active ? `${color}22` : "transparent",
-        color: active ? color : disabled ? "#444" : "#888",
-        fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer",
-        fontSize: "0.9rem", transition: "all 0.2s",
-        opacity: disabled ? 0.5 : 1,
-      }}
-    >
-      {children}
-    </button>
-  );
-}
+type DetectedPose = "t_pose" | "a_pose" | "arms_down" | "unclear";
 
 export default function EditorPage() {
   const { modelId } = useParams<{ modelId: string }>();
-  const { status, pct, step, glbUrl, error } = useRigStatus(modelId);
+  // Bumped on each successful /rerig-landmarks/ POST so useRigStatus
+  // re-enters its polling effect (the hook stops at the terminal state).
+  const [landmarkRunId, setLandmarkRunId] = useState(0);
+  const { status, pct, step, glbUrl, error } = useRigStatus(modelId, landmarkRunId);
 
   const [tab, setTab]                               = useState<Tab>("view");
   const [playAnimation, setPlayAnimation]           = useState(false);
@@ -51,29 +32,32 @@ export default function EditorPage() {
   const [boneMapping, setBoneMapping]               = useState<Record<string, string> | null>(null);
   const [rigLog, setRigLog]                         = useState<string>("");
   const [showLog, setShowLog]                       = useState(false);
-  type DetectedPose = "t_pose" | "a_pose" | "arms_down" | "unclear";
   const [detectedPose, setDetectedPose]             = useState<DetectedPose | null>(null);
   const [poseAngle, setPoseAngle]                   = useState<number | null>(null);
   const [poseConfidence, setPoseConfidence]         = useState<number>(0);
+  const [detectionMethod, setDetectionMethod]       = useState<string>("");
 
-  // Fetch the rig's Mixamo→DEF bone map, Blender stdout, and pose
-  // classification once rigging completes. The status endpoint doesn't
-  // carry these — only the detail endpoint does.
+  // Fetch the rig's bone map, Blender stdout, and pose classification once
+  // rigging completes. The status endpoint doesn't carry these — only the
+  // detail endpoint does.
   useEffect(() => {
     if ((status !== "done" && status !== "failed") || !modelId) return;
-    api.get<{
-      bone_mapping: Record<string, string>;
-      rig_log: string;
-      detected_pose?: DetectedPose;
-      pose_angle_deg?: number | null;
-      pose_confidence?: number;
-    }>(`/rigs/${modelId}/`)
+    api
+      .get<{
+        bone_mapping: Record<string, string>;
+        rig_log: string;
+        detected_pose?: DetectedPose;
+        pose_angle_deg?: number | null;
+        pose_confidence?: number;
+        detection_method?: string;
+      }>(`/rigs/${modelId}/`)
       .then(({ data }) => {
         setBoneMapping(data.bone_mapping ?? {});
         setRigLog(data.rig_log ?? "");
         setDetectedPose(data.detected_pose ?? null);
         setPoseAngle(data.pose_angle_deg ?? null);
         setPoseConfidence(data.pose_confidence ?? 0);
+        setDetectionMethod(data.detection_method ?? "");
       })
       .catch(() => {
         setBoneMapping({});
@@ -81,21 +65,25 @@ export default function EditorPage() {
         setDetectedPose(null);
         setPoseAngle(null);
         setPoseConfidence(0);
+        setDetectionMethod("");
       });
   }, [status, modelId, landmarkQueued]);
 
   const modelReady = hasEmbedded !== null;
-  const playLabel  = hasEmbedded ? "▶ Embedded animation" : "👋 Wave animation";
+  const playLabel = hasEmbedded ? "Embedded animation" : "Wave animation";
 
   const handleRerig = async () => {
     if (!modelId || rerigging) return;
-    setRerigging(true); setRerigError(null);
-    setHasEmbedded(null); setPlayAnimation(false); setShowSkeleton(false);
+    setRerigging(true);
+    setRerigError(null);
+    setHasEmbedded(null);
+    setPlayAnimation(false);
+    setShowSkeleton(false);
     try {
       await api.post(`/rigs/${modelId}/rerig/`);
       window.location.reload();
-    } catch (err: any) {
-      setRerigError(err.response?.data?.error || err.message || "Rerig failed.");
+    } catch (err: unknown) {
+      setRerigError(extractApiError(err, "Rerig failed."));
       setRerigging(false);
     }
   };
@@ -109,316 +97,613 @@ export default function EditorPage() {
       const r = await api.post(`/rigs/${modelId}/rerig-landmarks/`, { landmarks });
       console.log("[Landmarks] Response:", r.status, r.data);
 
-      // Wipe the cached log so the next "Show log" press shows the new run.
       setRigLog("");
       setShowLog(false);
 
-      // Switch back to the view tab — the progress bar will appear automatically
-      // because useRigStatus will poll and see status = "pending" → "processing" → "done"
       setLandmarkQueued(true);
+      setLandmarkRunId((n) => n + 1);   // restart useRigStatus polling
       setLandmarkSubmitting(false);
       setHasEmbedded(null);
       setPlayAnimation(false);
       setShowSkeleton(false);
       setTab("view");
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[Landmarks] POST failed:", err);
-      const status = err.response?.status;
-      const detail = err.response?.data?.detail || err.response?.data?.error;
       let msg: string;
-      if (status === 429) {
-        // DRF includes a Retry-After hint on rate-limit responses.
-        const retry = err.response?.data?.detail
-          ?? "Try again later.";
-        msg = `Rate limit reached. ${retry} (Local dev tip: restart Django to reset throttle counters; settings/local.py already relaxes the caps to 10000/hour.)`;
-      } else if (status === 401) {
-        msg = "You need to be logged in to apply landmarks.";
+      if (isAxiosError(err)) {
+        const code = err.response?.status;
+        if (code === 429) {
+          const retry =
+            (err.response?.data as { detail?: string } | undefined)?.detail ??
+            "Try again later.";
+          msg = `Rate limit reached. ${retry} (Local dev tip: restart Django to reset throttle counters; settings/local.py already relaxes the caps to 10000/hour.)`;
+        } else if (code === 401) {
+          msg = "You need to be logged in to apply landmarks.";
+        } else {
+          msg = extractApiError(err, "Failed to apply landmarks.");
+        }
       } else {
-        msg = detail || err.message || "Failed to apply landmarks.";
+        msg = err instanceof Error ? err.message : "Failed to apply landmarks.";
       }
       setLandmarkError(msg);
       setLandmarkSubmitting(false);
     }
   };
 
-  // After landmarks are queued, useRigStatus drives everything.
-  // Once done, clear the queued flag so the viewer shows normally.
   const effectiveStatus = landmarkQueued && status === "done" ? "done" : status;
 
   return (
-    <div style={{ maxWidth: 1200, margin: "2rem auto", padding: "0 1rem" }}>
-      <h1 style={{ fontSize: "1.6rem", fontWeight: 800, marginBottom: "0.5rem" }}>
-        Model Editor
-      </h1>
+    <div className="relative isolate min-h-[100svh] pt-28 pb-16">
+      <div className="pointer-events-none absolute inset-0 -z-10">
+        <div className="absolute -top-1/3 right-0 h-[60vh] w-[60vh] rounded-full bg-accent/8 blur-[160px] [animation:var(--animate-aurora-1)]" />
+      </div>
 
-      {/* Progress bar — shown when processing OR just after landmark apply */}
-      {(effectiveStatus !== "done" || landmarkQueued) && effectiveStatus !== "failed" && (
-        <div style={{
-          background: "#12121a", border: "1px solid #2a2a3d",
-          borderRadius: 10, padding: "1.25rem 1.5rem", marginBottom: "1.5rem",
-        }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.75rem" }}>
-            <span style={{ fontWeight: 600 }}>
-              {landmarkQueued && status !== "done"
-                ? `⚙️ ${step || "Applying landmark rig…"}`
-                : `⚙️ ${step}`}
-            </span>
-            <span style={{ color: "#6c63ff", fontWeight: 700 }}>{pct}%</span>
-          </div>
-          <div style={{ background: "#1a1a2e", borderRadius: 6, height: 8, overflow: "hidden" }}>
-            <div style={{
-              width: `${pct || 0}%`, height: "100%",
-              background: "linear-gradient(90deg,#6c63ff,#00d4ff)",
-              borderRadius: 6, transition: "width 0.5s ease",
-            }} />
-          </div>
-          {error && <div style={{ color: "#ff6b6b", fontSize: "0.85rem", marginTop: "0.75rem" }}>{error}</div>}
+      <div className="mx-auto w-full max-w-6xl px-6">
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">
+            {"// Editor"}
+          </span>
+          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+            rig: {modelId?.slice(0, 8)}
+          </span>
         </div>
-      )}
+        <h1 className="mt-3 text-3xl font-bold tracking-[-0.02em] text-foreground sm:text-4xl">
+          Model editor
+        </h1>
 
-      {/* Failed state */}
-      {effectiveStatus === "failed" && !landmarkQueued && (
-        <div style={{
-          background: "#12121a", border: "1px solid #2a2a3d",
-          borderRadius: 10, padding: "1.25rem 1.5rem", marginBottom: "1.5rem",
-        }}>
-          <div style={{ color: "#ff6b6b", fontWeight: 600, marginBottom: "1rem" }}>❌ Rigging failed</div>
-          {error && <div style={{ color: "#ff6b6b", fontSize: "0.85rem", marginBottom: "1rem" }}>{error}</div>}
-          <button onClick={handleRerig} disabled={rerigging} style={{
-            padding: "0.6rem 1.2rem", borderRadius: 8, border: "none",
-            background: rerigging ? "#2a2a3d" : "#6c63ff",
-            color: rerigging ? "#666" : "#fff", fontWeight: 600,
-            cursor: rerigging ? "not-allowed" : "pointer",
-          }}>
-            {rerigging ? "Rerigging…" : "🔄 Rerig model"}
-          </button>
-        </div>
-      )}
-
-      {/* Done state */}
-      {effectiveStatus === "done" && glbUrl && (
-        <div>
-          {/* Success bar — hide while landmark re-rig is still processing */}
-          {!(landmarkQueued && status !== "done") && (
-            <div style={{
-              background: "rgba(0,230,118,0.08)", border: "1px solid rgba(0,230,118,0.2)",
-              borderRadius: 8, padding: "0.75rem 1rem", color: "#00e676",
-              marginBottom: "1rem", fontSize: "0.9rem",
-              display: "flex", justifyContent: "space-between",
-              alignItems: "center", gap: "1rem", flexWrap: "wrap",
-            }}>
-              <span>✅ Rigging complete! Your model is ready.</span>
-              <a href={glbUrl} download style={{
-                padding: "0.5rem 0.9rem",
-                background: "linear-gradient(135deg,rgba(108,99,255,.15),rgba(0,212,255,.25))",
-                border: "1px solid rgba(108,99,255,0.7)", borderRadius: 999,
-                color: "#fff", fontSize: "0.85rem", fontWeight: 600,
-                textDecoration: "none", whiteSpace: "nowrap",
-              }}>
-                ⬇️ Download
-              </a>
+        {/* Progress bar */}
+        {(effectiveStatus !== "done" || landmarkQueued) && effectiveStatus !== "failed" && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-8 overflow-hidden rounded-xl border border-border bg-surface/70 p-5 backdrop-blur"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <Spinner className="text-accent" />
+                <span className="text-sm font-medium text-foreground">
+                  {landmarkQueued && status !== "done"
+                    ? step || "Applying landmark rig…"
+                    : step}
+                </span>
+              </div>
+              <span className="font-mono text-sm font-semibold text-accent">{pct}%</span>
             </div>
-          )}
+            <div className="h-2 overflow-hidden rounded-full bg-background">
+              <motion.div
+                className="h-full rounded-full bg-gradient-to-r from-accent to-accent-soft"
+                style={{ width: `${pct || 0}%` }}
+                animate={{ width: `${pct || 0}%` }}
+                transition={{ duration: 0.5, ease: "easeOut" }}
+              />
+            </div>
+            {error && (
+              <div className="mt-3 text-xs text-danger">{error}</div>
+            )}
+          </motion.div>
+        )}
 
-          {/* Tabs */}
-          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
-            <Btn onClick={() => { setTab("view"); setLandmarkQueued(false); }} active={tab === "view"} color="#6c63ff">
-              🖼 View model
-            </Btn>
-            <Btn
-              onClick={() => { setTab("edit-rig"); setPlayAnimation(false); setShowSkeleton(false); setLandmarkQueued(false); }}
-              active={tab === "edit-rig"} color="#f59e0b"
+        {/* Failed state */}
+        {effectiveStatus === "failed" && !landmarkQueued && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-8 rounded-xl border border-danger/30 bg-danger/5 p-5"
+          >
+            <div className="flex items-center gap-2.5 text-danger">
+              <AlertIcon />
+              <span className="font-semibold">Rigging failed</span>
+            </div>
+            {error && <div className="mt-3 text-sm text-danger/90">{error}</div>}
+            <button
+              onClick={handleRerig}
+              disabled={rerigging}
+              className="mt-4 inline-flex items-center gap-2 rounded-full bg-accent px-5 py-2 text-sm font-semibold text-background shadow-[var(--shadow-glow-accent)] transition-transform hover:scale-[1.02] active:scale-[0.98] disabled:cursor-wait disabled:opacity-70"
             >
-              🎯 Edit rig placement
-            </Btn>
-            <Btn
-              onClick={() => { setTab("play"); setPlayAnimation(false); setShowSkeleton(false); setLandmarkQueued(false); }}
-              active={tab === "play"} color="#00d4ff"
-            >
-              🎞 Play animation
-            </Btn>
-          </div>
+              {rerigging ? <Spinner /> : <RefreshIcon className="h-4 w-4" />}
+              {rerigging ? "Rerigging…" : "Rerig model"}
+            </button>
+          </motion.div>
+        )}
 
-          {/* View tab */}
-          {tab === "view" && (
-            <>
-              <div style={{ display: "flex", gap: "0.6rem", marginBottom: "0.75rem", flexWrap: "wrap" }}>
-                {modelReady && (
-                  <Btn onClick={() => setPlayAnimation(v => !v)} active={playAnimation} color="#00d4ff">
-                    {playAnimation ? "⏹ Stop" : playLabel}
-                  </Btn>
-                )}
-                {modelReady && (
-                  <Btn onClick={() => setShowSkeleton(v => !v)} active={showSkeleton} color="#a78bfa">
-                    {showSkeleton ? "🦴 Hide skeleton" : "🦴 Show skeleton"}
-                  </Btn>
-                )}
-                <Btn onClick={handleRerig} disabled={rerigging} color="#f87171">
-                  <span style={{ color: rerigging ? "#555" : "#f87171" }}>
-                    {rerigging ? "Rerigging…" : "🔄 Rerig model"}
+        {/* Done state */}
+        {effectiveStatus === "done" && glbUrl && (
+          <div className="mt-8">
+            {/* Success banner */}
+            {!(landmarkQueued && status !== "done") && (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/8 px-5 py-3.5"
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent text-background">
+                    <CheckIcon className="h-3.5 w-3.5" />
                   </span>
-                </Btn>
-                {rigLog && (
-                  <Btn onClick={() => setShowLog((v) => !v)} active={showLog} color="#888">
-                    {showLog ? "📜 Hide log" : "📜 Show log"}
-                  </Btn>
-                )}
-                {detectedPose && (() => {
-                  const labels: Record<DetectedPose, string> = {
-                    t_pose:    "T-pose",
-                    a_pose:    "A-pose",
-                    arms_down: "Arms down",
-                    unclear:   "Pose unclear",
-                  };
-                  // Yellow when not T-pose: Rigify's metarig is built for T,
-                  // so anything else risks weight-painting artefacts.
-                  const isOk = detectedPose === "t_pose";
-                  const color = isOk ? "rgba(0,230,118,0.9)" : "rgba(245,158,11,0.95)";
-                  const bg    = isOk ? "rgba(0,230,118,0.08)" : "rgba(245,158,11,0.08)";
-                  const tip = isOk
-                    ? `Detected ${labels[detectedPose]} — Rigify weights cleanly on this pose.`
-                    : `Detected ${labels[detectedPose]}. Rigify expects T-pose for cleanest weighting; arms may bind imperfectly.`;
-                  const angleText =
-                    poseAngle !== null && Number.isFinite(poseAngle)
-                      ? ` · ${poseAngle.toFixed(0)}°`
-                      : "";
-                  const confText =
-                    poseConfidence > 0
-                      ? ` (${Math.round(poseConfidence * 100)}%)`
-                      : "";
-                  return (
-                    <span
-                      title={tip}
-                      style={{
-                        padding: "0.5rem 0.85rem",
-                        borderRadius: 8,
-                        border: `1px solid ${color}`,
-                        background: bg,
-                        color,
-                        fontWeight: 600,
-                        fontSize: "0.85rem",
-                      }}
-                    >
-                      🧍 {labels[detectedPose]}{angleText}{confText}
+                  <div>
+                    <span className="text-sm font-medium text-foreground">
+                      Rigging complete — your model is ready.
                     </span>
-                  );
-                })()}
-              </div>
-
-              {showLog && rigLog && (
-                <pre
-                  style={{
-                    background: "#0a0a14", border: "1px solid #2a2a3d",
-                    borderRadius: 8, padding: "0.75rem 1rem",
-                    color: "#9ab", fontSize: "0.72rem",
-                    maxHeight: 240, overflow: "auto",
-                    whiteSpace: "pre-wrap", marginBottom: "0.75rem",
-                  }}
+                    {detectionMethod && (
+                      <span className={`ml-2 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                        detectionMethod === "llm_vision"
+                          ? "bg-purple-500/15 text-purple-400"
+                          : detectionMethod === "geometry"
+                          ? "bg-accent/15 text-accent"
+                          : detectionMethod === "user_landmarks"
+                          ? "bg-blue-500/15 text-blue-400"
+                          : "bg-warning/15 text-warning"
+                      }`}>
+                        {detectionMethod === "llm_vision" && "AI vision"}
+                        {detectionMethod === "geometry" && "Auto-detect"}
+                        {detectionMethod === "user_landmarks" && "Manual"}
+                        {detectionMethod === "failed" && "Geometry fallback"}
+                        {!["llm_vision","geometry","user_landmarks","failed"].includes(detectionMethod) && detectionMethod}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <a
+                  href={glbUrl}
+                  download
+                  className="inline-flex items-center gap-2 rounded-full border border-accent/40 bg-accent/10 px-4 py-1.5 text-sm font-semibold text-accent transition-colors hover:bg-accent/20"
                 >
-                  {rigLog}
-                </pre>
-              )}
-
-              {showSkeleton && (
-                <p style={{ color: "#a78bfa", fontSize: "0.82rem", marginBottom: "0.75rem" }}>
-                  🦴 Cyan lines show the deform bones — rotate the model to inspect coverage.
-                </p>
-              )}
-              {rerigError && (
-                <div style={{
-                  background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)",
-                  borderRadius: 8, padding: "0.6rem 1rem", color: "#f87171",
-                  fontSize: "0.85rem", marginBottom: "0.75rem",
-                }}>
-                  {rerigError}
-                </div>
-              )}
-
-              <ModelViewer
-                key={glbUrl}
-                glbUrl={glbUrl} height={560}
-                playAnimation={playAnimation}
-                showSkeleton={showSkeleton}
-                onReady={setHasEmbedded}
-              />
-            </>
-          )}
-
-          {/* Edit rig tab */}
-          {tab === "edit-rig" && (
-            <>
-              <div style={{
-                background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)",
-                borderRadius: 8, padding: "0.75rem 1rem",
-                color: "#f59e0b", fontSize: "0.85rem", marginBottom: "1rem",
-              }}>
-                🎯 <strong>Rig placement editor</strong> — select a landmark on the left, click
-                the spot on the model, work through all 6, then hit <strong>Apply rig</strong>.
-              </div>
-
-              {landmarkError && (
-                <div style={{
-                  background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)",
-                  borderRadius: 8, padding: "0.6rem 1rem", color: "#f87171",
-                  fontSize: "0.85rem", marginBottom: "0.75rem",
-                }}>
-                  {landmarkError}
-                </div>
-              )}
-
-              <LandmarkEditor
-                key={glbUrl}
-                glbUrl={glbUrl}
-                onSubmit={handleLandmarkSubmit}
-                submitting={landmarkSubmitting}
-              />
-            </>
-          )}
-
-          {/* Play animation tab */}
-          {tab === "play" && (
-            <>
-              <div style={{
-                background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.3)",
-                borderRadius: 8, padding: "0.75rem 1rem",
-                color: "#00d4ff", fontSize: "0.85rem", marginBottom: "1rem",
-              }}>
-                🎞 <strong>Animation player</strong> — pick an uploaded animation
-                or drop a local FBX/GLB to play it on your rig. Bone tracks are
-                remapped onto this rig using its bone map.
-                {" "}
-                <a href="/upload-animation" style={{ color: "#fff", textDecoration: "underline" }}>
-                  Upload a new animation
+                  <DownloadIcon className="h-4 w-4" />
+                  Download GLB
                 </a>
-              </div>
+              </motion.div>
+            )}
 
-              {boneMapping === null ? (
-                <div style={{ color: "#888", fontSize: "0.9rem" }}>
-                  Loading rig bone map…
+            {/* Landmark-failure soft warning */}
+            {detectionMethod === "failed" && !(landmarkQueued && status !== "done") && (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-5 rounded-xl border border-warning/30 bg-warning/5 px-5 py-3.5"
+              >
+                <div className="flex items-start gap-2.5 text-warning">
+                  <AlertIcon />
+                  <div>
+                    <p className="text-sm font-medium">Landmark detection fell back to geometry defaults</p>
+                    <p className="mt-1 text-xs text-warning/80">
+                      The AI-detected bone positions failed the anatomical check. The rig was built
+                      using automatic geometry analysis instead. Use &ldquo;Edit rig&rdquo; to manually
+                      adjust bone placement.
+                    </p>
+                  </div>
                 </div>
-              ) : (
-                <AnimationPlayer
-                  key={glbUrl}
-                  rigGlbUrl={glbUrl}
-                  boneMapping={boneMapping}
-                />
-              )}
-            </>
-          )}
-        </div>
-      )}
+              </motion.div>
+            )}
 
-      {/* Placeholder while initial processing */}
-      {effectiveStatus !== "done" && effectiveStatus !== "failed" && !landmarkQueued && (
-        <div style={{
-          height: 400, background: "#0a0a14", borderRadius: 12,
-          border: "1px dashed #2a2a3d", display: "flex",
-          alignItems: "center", justifyContent: "center",
-          color: "#888", fontSize: "0.9rem",
-        }}>
-          3D viewer will appear when rigging is complete
-        </div>
-      )}
+            {/* Tabs (segmented control) */}
+            <div className="inline-flex items-center gap-1 rounded-full border border-border bg-surface/60 p-1 backdrop-blur">
+              <TabButton
+                active={tab === "view"}
+                onClick={() => {
+                  setTab("view");
+                  setLandmarkQueued(false);
+                }}
+                icon={<ViewIcon className="h-3.5 w-3.5" />}
+              >
+                View model
+              </TabButton>
+              <TabButton
+                active={tab === "edit-rig"}
+                onClick={() => {
+                  setTab("edit-rig");
+                  setPlayAnimation(false);
+                  setShowSkeleton(false);
+                  setLandmarkQueued(false);
+                }}
+                icon={<TargetIcon className="h-3.5 w-3.5" />}
+              >
+                Edit rig
+              </TabButton>
+              <TabButton
+                active={tab === "play"}
+                onClick={() => {
+                  setTab("play");
+                  setPlayAnimation(false);
+                  setShowSkeleton(false);
+                  setLandmarkQueued(false);
+                }}
+                icon={<PlayIcon className="h-3.5 w-3.5" />}
+              >
+                Play animation
+              </TabButton>
+            </div>
+
+            <AnimatePresence mode="wait">
+              {tab === "view" && (
+                <motion.div
+                  key="view"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.25 }}
+                  className="mt-5"
+                >
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {modelReady && (
+                      <ToolButton
+                        active={playAnimation}
+                        onClick={() => setPlayAnimation((v) => !v)}
+                        icon={playAnimation ? <StopIcon /> : <PlayIcon />}
+                      >
+                        {playAnimation ? "Stop" : playLabel}
+                      </ToolButton>
+                    )}
+                    {modelReady && (
+                      <ToolButton
+                        active={showSkeleton}
+                        onClick={() => setShowSkeleton((v) => !v)}
+                        icon={<SkeletonIcon />}
+                      >
+                        {showSkeleton ? "Hide skeleton" : "Show skeleton"}
+                      </ToolButton>
+                    )}
+                    <ToolButton
+                      onClick={handleRerig}
+                      disabled={rerigging}
+                      tone="danger"
+                      icon={rerigging ? <Spinner /> : <RefreshIcon />}
+                    >
+                      {rerigging ? "Rerigging…" : "Rerig model"}
+                    </ToolButton>
+                    {rigLog && (
+                      <ToolButton
+                        active={showLog}
+                        onClick={() => setShowLog((v) => !v)}
+                        icon={<TerminalIcon />}
+                      >
+                        {showLog ? "Hide log" : "Show log"}
+                      </ToolButton>
+                    )}
+                    {detectedPose && <PoseBadge pose={detectedPose} angle={poseAngle} confidence={poseConfidence} />}
+                  </div>
+
+                  {showLog && rigLog && (
+                    <pre className="mb-3 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-background/80 px-4 py-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                      {rigLog}
+                    </pre>
+                  )}
+
+                  {showSkeleton && (
+                    <p className="mb-3 font-mono text-xs text-violet">
+                      Cyan lines show the deform bones — rotate the model to inspect coverage.
+                    </p>
+                  )}
+                  {rerigError && (
+                    <div className="mb-3 rounded-lg border border-danger/30 bg-danger/10 px-4 py-2.5 text-sm text-danger">
+                      {rerigError}
+                    </div>
+                  )}
+
+                  <div className="overflow-hidden rounded-2xl border border-border bg-surface/30">
+                    <ModelViewer
+                      key={glbUrl}
+                      glbUrl={glbUrl}
+                      height={560}
+                      playAnimation={playAnimation}
+                      showSkeleton={showSkeleton}
+                      onReady={setHasEmbedded}
+                    />
+                  </div>
+                </motion.div>
+              )}
+
+              {tab === "edit-rig" && (
+                <motion.div
+                  key="edit-rig"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.25 }}
+                  className="mt-5"
+                >
+                  <Callout tone="warning">
+                    <strong className="font-semibold text-foreground">
+                      Rig placement editor.
+                    </strong>{" "}
+                    Pick a landmark on the left, click the spot on the model,
+                    work through all 14, then hit{" "}
+                    <strong className="text-foreground">Apply rig</strong>.
+                  </Callout>
+
+                  {landmarkError && (
+                    <div className="mb-3 rounded-lg border border-danger/30 bg-danger/10 px-4 py-2.5 text-sm text-danger">
+                      {landmarkError}
+                    </div>
+                  )}
+
+                  <LandmarkEditor
+                    key={glbUrl}
+                    glbUrl={glbUrl}
+                    rigId={modelId}
+                    onSubmit={handleLandmarkSubmit}
+                    submitting={landmarkSubmitting}
+                  />
+                </motion.div>
+              )}
+
+              {tab === "play" && (
+                <motion.div
+                  key="play"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.25 }}
+                  className="mt-5"
+                >
+                  <Callout tone="info">
+                    <strong className="font-semibold text-foreground">
+                      Animation player.
+                    </strong>{" "}
+                    Pick an uploaded animation or drop a local FBX/GLB to play
+                    it on your rig. Bone tracks are remapped onto this rig
+                    using its bone map.{" "}
+                    <a href="/upload-animation" className="text-accent underline-offset-4 hover:underline">
+                      Upload a new animation
+                    </a>
+                  </Callout>
+
+                  {boneMapping === null ? (
+                    <div className="rounded-lg border border-border bg-surface/40 px-5 py-4 text-sm text-muted-foreground">
+                      Loading rig bone map…
+                    </div>
+                  ) : (
+                    <AnimationPlayer
+                      key={glbUrl}
+                      rigGlbUrl={glbUrl}
+                      boneMapping={boneMapping}
+                    />
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+
+        {/* Placeholder while initial processing */}
+        {effectiveStatus !== "done" && effectiveStatus !== "failed" && !landmarkQueued && (
+          <div className="mt-6 flex h-[400px] items-center justify-center rounded-2xl border border-dashed border-border bg-surface/30 text-sm text-muted-foreground">
+            3D viewer will appear when rigging is complete
+          </div>
+        )}
+      </div>
     </div>
+  );
+}
+
+/* ────────────────────────────── helpers ────────────────────────────── */
+
+function TabButton({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active?: boolean;
+  onClick: () => void;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+        active
+          ? "text-background"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {active && (
+        <motion.span
+          layoutId="tab-active"
+          className="absolute inset-0 rounded-full bg-accent"
+          transition={{ type: "spring", stiffness: 400, damping: 32 }}
+        />
+      )}
+      <span className="relative z-10 flex items-center gap-1.5">
+        {icon}
+        {children}
+      </span>
+    </button>
+  );
+}
+
+function ToolButton({
+  active,
+  disabled,
+  tone = "default",
+  onClick,
+  icon,
+  children,
+}: {
+  active?: boolean;
+  disabled?: boolean;
+  tone?: "default" | "danger";
+  onClick: () => void;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const base =
+    "inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+  const styles =
+    tone === "danger"
+      ? "border-border bg-surface/40 text-danger hover:border-danger/40 hover:bg-danger/5"
+      : active
+        ? "border-accent/50 bg-accent/10 text-accent"
+        : "border-border bg-surface/40 text-muted-foreground hover:border-border-strong hover:text-foreground";
+  return (
+    <button onClick={onClick} disabled={disabled} className={`${base} ${styles}`}>
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+function Callout({
+  tone,
+  children,
+}: {
+  tone: "info" | "warning";
+  children: React.ReactNode;
+}) {
+  const styles =
+    tone === "warning"
+      ? "border-amber-500/30 bg-amber-500/5 text-amber-200"
+      : "border-violet/30 bg-violet/5 text-violet/95";
+  return (
+    <div className={`mb-4 rounded-xl border px-4 py-3 text-sm ${styles}`}>
+      {children}
+    </div>
+  );
+}
+
+function PoseBadge({
+  pose,
+  angle,
+  confidence,
+}: {
+  pose: DetectedPose;
+  angle: number | null;
+  confidence: number;
+}) {
+  const labels: Record<DetectedPose, string> = {
+    t_pose: "T-pose",
+    a_pose: "A-pose",
+    arms_down: "Arms down",
+    unclear: "Pose unclear",
+  };
+  const isOk = pose === "t_pose";
+  const cls = isOk
+    ? "border-accent/40 bg-accent/10 text-accent"
+    : "border-amber-500/40 bg-amber-500/10 text-amber-300";
+  const tip = isOk
+    ? `Detected ${labels[pose]} — Rigify weights cleanly on this pose.`
+    : `Detected ${labels[pose]}. Rigify expects T-pose for cleanest weighting; arms may bind imperfectly.`;
+  const angleText =
+    angle !== null && Number.isFinite(angle) ? ` · ${angle.toFixed(0)}°` : "";
+  const confText = confidence > 0 ? ` (${Math.round(confidence * 100)}%)` : "";
+
+  return (
+    <span
+      title={tip}
+      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium ${cls}`}
+    >
+      <PersonIcon className="h-3.5 w-3.5" />
+      {labels[pose]}
+      {angleText}
+      {confText}
+    </span>
+  );
+}
+
+/* ────────────────────────────── icons ────────────────────────────── */
+
+function Spinner({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={`h-4 w-4 animate-spin ${className}`} fill="none">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+function ViewIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12c2-4 5-6 9-6s7 2 9 6c-2 4-5 6-9 6s-7-2-9-6z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+function TargetIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="4" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+      <polygon points="6,4 20,12 6,20" />
+    </svg>
+  );
+}
+function StopIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    </svg>
+  );
+}
+function SkeletonIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="5" r="2" />
+      <line x1="12" y1="7" x2="12" y2="14" />
+      <line x1="8" y1="9" x2="16" y2="9" />
+      <line x1="12" y1="14" x2="9" y2="20" />
+      <line x1="12" y1="14" x2="15" y2="20" />
+    </svg>
+  );
+}
+function RefreshIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+      <path d="M3 21v-5h5" />
+    </svg>
+  );
+}
+function TerminalIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 9l3 3-3 3" />
+      <line x1="13" y1="15" x2="17" y2="15" />
+    </svg>
+  );
+}
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 12l5 5L20 7" />
+    </svg>
+  );
+}
+function DownloadIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 4v12" />
+      <path d="M7 11l5 5 5-5" />
+      <path d="M5 20h14" />
+    </svg>
+  );
+}
+function AlertIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className ?? "h-5 w-5"} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="8" x2="12" y2="13" />
+      <circle cx="12" cy="16.5" r="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+function PersonIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="6" r="3" />
+      <line x1="12" y1="9" x2="12" y2="14" />
+      <line x1="6" y1="11" x2="18" y2="11" />
+      <line x1="12" y1="14" x2="9" y2="20" />
+      <line x1="12" y1="14" x2="15" y2="20" />
+    </svg>
   );
 }

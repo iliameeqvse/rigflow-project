@@ -1,26 +1,49 @@
 FROM python:3.12-slim-bookworm
 
-# Install system dependencies AND Blender
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libpq-dev \
-    blender \
-    libgl1 \
-    libxi6 \
-    libxxf86vm1 \
-    libxrender1 \
-    libxfixes3 \
-    xvfb \
+# We install Blender from the official Linux tarball rather than apt's
+# `blender` package because Debian Bookworm's blender ships an incomplete
+# bundled Python — the io_scene_gltf2 addon imports numpy that isn't there,
+# breaking GLB export with `ModuleNotFoundError: No module named 'numpy'`
+# inside the addon. The tarball is fully self-contained.
+ARG BLENDER_VERSION=5.0.1
+ARG BLENDER_SERIES=5.0
+ARG BLENDER_DIR=blender-${BLENDER_VERSION}-linux-x64
+
+# System libs Blender dynamically links against, even in --background mode.
+# Same set we install on the host for WSL.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libpq-dev \
+        curl \
+        xz-utils \
+        libxrender1 \
+        libxi6 \
+        libxxf86vm1 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libsm6 \
+        libxext6 \
+        libgl1 \
+        libegl1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Enable Rigify addon in Blender's user preferences
+# Download Blender, extract under /opt, and symlink into /usr/local/bin
+# so it's on PATH and matches the host setup.
+RUN curl -fsSL -o /tmp/blender.tar.xz \
+        "https://download.blender.org/release/Blender${BLENDER_SERIES}/${BLENDER_DIR}.tar.xz" \
+    && tar -xJf /tmp/blender.tar.xz -C /opt \
+    && rm /tmp/blender.tar.xz \
+    && ln -sf "/opt/${BLENDER_DIR}/blender" /usr/local/bin/blender
+
+# Pre-enable Rigify so the first request doesn't pay the addon-enable cost.
+# Non-fatal: the auto-rig script also calls enable_rigify() at runtime.
 RUN blender --background --python-expr \
     "import bpy; bpy.ops.preferences.addon_enable(module='rigify'); bpy.ops.wm.save_userpref()" \
-    || true   # don't fail build if this step has a non-zero exit
+    || true
 
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-ENV BLENDER_PATH=/usr/bin/blender
+ENV BLENDER_PATH=/usr/local/bin/blender

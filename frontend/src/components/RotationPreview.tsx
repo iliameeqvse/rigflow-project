@@ -14,6 +14,24 @@ import {
 
 const TARGET_HEIGHT = 2.0;
 
+// Pick a default rotation that stands an upright humanoid upright in the
+// three.js Y-up scene. We use the thinnest AABB axis as a proxy for the
+// model's depth (front-to-back direction):
+//   - thinnest = Z → already canonical Y-up (height along Y, depth into-screen).
+//   - thinnest = Y → model is lying horizontal (depth along Y), apply -90° X
+//     to swing the height axis up. Works for both Z-up authoring and
+//     T-pose models where size.x marginally exceeds size.z.
+//   - thinnest = X → unusual (model thin sideways); leave for manual rotation.
+// The rigging backend runs a parallel correction pass on the post-import
+// Blender AABB so both sides reach canonical before the user's rotation
+// is composed on top.
+function autoOrientFromSize(size: THREE.Vector3): ModelRotation | null {
+  const min = Math.min(size.x, size.y, size.z);
+  if (size.z === min) return null;
+  if (size.y === min) return { x: -90, y: 0, z: 0 };
+  return null;
+}
+
 interface Props {
   file: File;
   rotation: ModelRotation;
@@ -66,11 +84,21 @@ function PreviewObject({
     promise
       .then((loaded) => {
         if (cancelled) return;
-        // No auto-orient: show the model exactly as the loader produced
-        // it. The user is responsible for using the rotation controls to
-        // stand the model up + face it forward. This keeps preview and
-        // Blender pipelines deterministically aligned — whatever the user
-        // sees here is what gets sent through.
+        // Auto-orient is baked directly onto the loaded object so the
+        // user's rotationQuaternion (sent to the rigging backend) stays
+        // a clean fine-tune delta. The backend reaches the same canonical
+        // orientation independently by reading the FBX header.
+        loaded.updateMatrixWorld(true);
+        const rawBox = new THREE.Box3().setFromObject(loaded);
+        const rawSize = new THREE.Vector3();
+        rawBox.getSize(rawSize);
+        const initial = autoOrientFromSize(rawSize);
+        if (initial) {
+          const autoQuat = buildAxisQuaternion("x", initial.x)
+            .multiply(buildAxisQuaternion("y", initial.y))
+            .multiply(buildAxisQuaternion("z", initial.z));
+          loaded.applyQuaternion(autoQuat);
+        }
         autoFit(loaded);
         setObj(loaded);
       })
@@ -220,9 +248,10 @@ export function RotationPreview({
           marginBottom: "0.6rem",
         }}
       >
-        Adjust the three axes until the model is upright (head pointing up)
-        and its front faces the camera. The rig will be built in this exact
-        orientation — no automatic rotation is applied on top.
+        We pick a best-guess starting orientation. Adjust the three axes
+        until the model is upright (head up) and its front faces the camera.
+        The rig is built in exactly this orientation — no further correction
+        is applied.
       </div>
 
       <div style={{ display: "grid", gap: ".75rem" }}>
