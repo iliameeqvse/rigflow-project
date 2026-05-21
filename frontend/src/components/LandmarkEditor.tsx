@@ -42,25 +42,25 @@ export type LandmarkPositions = LandmarkSet;
 
 const LANDMARKS = [
   // Head — yellow
-  { key: "chin"           as const, label: "Chin",           color: "#ffd166", instruction: "Click the bottom of the chin / top of neck", group: "Head"  },
+  { key: "chin"           as const, label: "Chin",           color: "#ffd166", group: "Head"  },
   // Torso — green
-  { key: "groin"          as const, label: "Groin",          color: "#06d6a0", instruction: "Click the crotch point between the legs",     group: "Torso" },
+  { key: "groin"          as const, label: "Groin",          color: "#06d6a0", group: "Torso" },
   // Left arm — blue
-  { key: "left_shoulder"  as const, label: "Left Shoulder",  color: "#118ab2", instruction: "Click the character's LEFT shoulder joint",   group: "Arm L" },
-  { key: "left_elbow"     as const, label: "Left Elbow",     color: "#118ab2", instruction: "Click the character's LEFT elbow",           group: "Arm L" },
-  { key: "left_wrist"     as const, label: "Left Wrist",     color: "#118ab2", instruction: "Click the character's LEFT wrist",           group: "Arm L" },
+  { key: "left_shoulder"  as const, label: "Left Shoulder",  color: "#118ab2", group: "Arm L" },
+  { key: "left_elbow"     as const, label: "Left Elbow",     color: "#118ab2", group: "Arm L" },
+  { key: "left_wrist"     as const, label: "Left Wrist",     color: "#118ab2", group: "Arm L" },
   // Right arm — same blue (mirror; the group label disambiguates)
-  { key: "right_shoulder" as const, label: "Right Shoulder", color: "#118ab2", instruction: "Click the character's RIGHT shoulder joint",  group: "Arm R" },
-  { key: "right_elbow"    as const, label: "Right Elbow",    color: "#118ab2", instruction: "Click the character's RIGHT elbow",          group: "Arm R" },
-  { key: "right_wrist"    as const, label: "Right Wrist",    color: "#118ab2", instruction: "Click the character's RIGHT wrist",          group: "Arm R" },
+  { key: "right_shoulder" as const, label: "Right Shoulder", color: "#118ab2", group: "Arm R" },
+  { key: "right_elbow"    as const, label: "Right Elbow",    color: "#118ab2", group: "Arm R" },
+  { key: "right_wrist"    as const, label: "Right Wrist",    color: "#118ab2", group: "Arm R" },
   // Left leg — pink
-  { key: "left_hip"       as const, label: "Left Hip",       color: "#ef476f", instruction: "Click the character's LEFT hip socket",      group: "Leg L" },
-  { key: "left_knee"      as const, label: "Left Knee",      color: "#ef476f", instruction: "Click the character's LEFT knee",            group: "Leg L" },
-  { key: "left_ankle"     as const, label: "Left Ankle",     color: "#ef476f", instruction: "Click the character's LEFT ankle",           group: "Leg L" },
+  { key: "left_hip"       as const, label: "Left Hip",       color: "#ef476f", group: "Leg L" },
+  { key: "left_knee"      as const, label: "Left Knee",      color: "#ef476f", group: "Leg L" },
+  { key: "left_ankle"     as const, label: "Left Ankle",     color: "#ef476f", group: "Leg L" },
   // Right leg — pink
-  { key: "right_hip"      as const, label: "Right Hip",      color: "#ef476f", instruction: "Click the character's RIGHT hip socket",     group: "Leg R" },
-  { key: "right_knee"     as const, label: "Right Knee",     color: "#ef476f", instruction: "Click the character's RIGHT knee",           group: "Leg R" },
-  { key: "right_ankle"    as const, label: "Right Ankle",    color: "#ef476f", instruction: "Click the character's RIGHT ankle",          group: "Leg R" },
+  { key: "right_hip"      as const, label: "Right Hip",      color: "#ef476f", group: "Leg R" },
+  { key: "right_knee"     as const, label: "Right Knee",     color: "#ef476f", group: "Leg R" },
+  { key: "right_ankle"    as const, label: "Right Ankle",    color: "#ef476f", group: "Leg R" },
 ];
 
 const GROUPS = ["Head", "Torso", "Arm L", "Arm R", "Leg L", "Leg R"] as const;
@@ -372,7 +372,13 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
     if (!rigId) setLandmarks(defaultLandmarks(b));
   }, [rigId]);
 
-  const currentMeta = LANDMARKS.find((m) => m.key === selectedKey);
+  const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleSelectRow = useCallback((key: keyof LandmarkPositions) => {
+    setSelectedKey(key);
+    setPulseKey(key);
+    if (pulseTimer.current) clearTimeout(pulseTimer.current);
+    pulseTimer.current = setTimeout(() => setPulseKey(null), 700);
+  }, []);
   const ext = glbUrl.split("?")[0].split(".").pop()?.toLowerCase();
 
   return (
@@ -387,20 +393,14 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
         maxHeight: 560, overflowY: "auto",
       }}>
         <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#888", letterSpacing: "0.08em" }}>
-          LANDMARK PLACEMENT
+          LANDMARKS
         </div>
-
-        {/* Current instruction */}
         <div style={{
-          background: currentMeta ? "rgba(108,99,255,0.08)" : "rgba(42,42,61,0.4)",
-          border: `1px solid ${currentMeta ? "rgba(108,99,255,0.35)" : "#2a2a3d"}`,
-          borderRadius: 8, padding: "0.6rem 0.75rem",
-          fontSize: "0.8rem", color: "#ccc", minHeight: 44,
+          background: "rgba(108,99,255,0.08)", border: "1px solid rgba(108,99,255,0.35)",
+          borderRadius: 8, padding: "0.6rem 0.75rem", fontSize: "0.78rem", color: "#bbb",
         }}>
-          {currentMeta
-            ? <><span style={{ color: currentMeta.color, fontWeight: 700 }}>{currentMeta.label}:</span><br />{currentMeta.instruction}</>
-            : <span style={{ color: "#00c48c" }}>All placed — hit Apply!</span>
-          }
+          Drag any handle to reposition it. Depth is set automatically on release.
+          Click a row to locate its handle.
         </div>
 
         {/* Grouped landmark list */}
@@ -413,9 +413,8 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
             <div style={{ display: "flex", flexDirection: "column", gap: ".25rem" }}>
               {LANDMARKS.filter((l) => l.group === group).map(({ key, label, color }) => {
                 const active = selectedKey === key;
-                const placed = landmarks !== null;
                 return (
-                  <button key={key} onClick={() => setSelectedKey(key)} style={{
+                  <button key={key} onClick={() => handleSelectRow(key)} style={{
                     display: "flex", alignItems: "center", gap: "0.55rem",
                     padding: "0.45rem 0.7rem", borderRadius: 7,
                     border: `1px solid ${active ? color : "#2a2a3d"}`,
@@ -426,7 +425,7 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
                   }}>
                     <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }} />
                     {label}
-                    {placed && <span style={{ marginLeft: "auto", color: "#00c48c", fontSize: 11 }}>✓</span>}
+                    {depthLost[key] && <span style={{ marginLeft: "auto", color: "#ffae00", fontSize: 11 }} title="Depth not found — drag back over the mesh">⚠</span>}
                   </button>
                 );
               })}
