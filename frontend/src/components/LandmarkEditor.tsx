@@ -350,6 +350,32 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
     setDepthLost((d) => ({ ...d, [key]: !snap.hit }));
   }, [landmarks, model]);
 
+  // Arrow keys nudge the selected handle (Shift = coarse); depth re-snaps after.
+  useEffect(() => {
+    if (!selectedKey) return;
+    const onKey = (e: KeyboardEvent) => {
+      const step = e.shiftKey ? 0.05 : 0.01;
+      let dx = 0, dy = 0;
+      if (e.key === "ArrowLeft")       dx = -step;
+      else if (e.key === "ArrowRight") dx =  step;
+      else if (e.key === "ArrowUp")    dy =  step;
+      else if (e.key === "ArrowDown")  dy = -step;
+      else return;
+      e.preventDefault();
+      setLandmarks((prev) => {
+        if (!prev) return prev;
+        const nx = prev[selectedKey][0] + dx;
+        const ny = prev[selectedKey][1] + dy;
+        const z  = model
+          ? snapDepthToMeshCenter(model, nx, ny, prev[selectedKey][2]).z
+          : prev[selectedKey][2];
+        return { ...prev, [selectedKey]: [nx, ny, z] as [number, number, number] };
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedKey, model]);
+
   // Fetch landmarks from API on open, fall back to defaultLandmarks if fetch fails.
   // Only runs when rigId is provided; without rigId, handleBoundsReady sets defaults directly.
   useEffect(() => {
