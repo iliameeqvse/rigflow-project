@@ -316,26 +316,12 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
 
       {/* ── Canvas ── */}
       <div style={{
-        flex: 1, height: 560,
+        flex: 1, height: 560, position: "relative",
         background: "linear-gradient(135deg,#0a0a14,#0d0d20)",
         borderRadius: 12, overflow: "hidden",
-        border: `2px solid ${selectedKey ? "rgba(108,99,255,0.5)" : "#2a2a3d"}`,
-        cursor: selectedKey ? "crosshair" : "default",
-        transition: "border-color 0.2s",
+        border: "2px solid #2a2a3d",
       }}>
-        {/* Crosshair hint */}
-        {selectedKey && currentMeta && (
-          <div style={{
-            position: "absolute", top: 8, left: "50%", transform: "translateX(-50%)",
-            background: `${currentMeta.color}22`, border: `1px solid ${currentMeta.color}`,
-            borderRadius: 20, padding: "4px 12px", fontSize: 11, color: currentMeta.color,
-            fontWeight: 700, pointerEvents: "none", zIndex: 10, whiteSpace: "nowrap",
-          }}>
-            Click on the model to place: {currentMeta.label}
-          </div>
-        )}
-
-        <Canvas camera={{ position: [0, 0.9, 3.2], fov: 45 }}>
+        <Canvas orthographic camera={{ position: [0, 1, 4], zoom: 220, near: 0.01, far: 100 }}>
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 10, 5]} intensity={1} />
           <pointLight position={[-5, 5, -5]} intensity={0.3} color="#6c63ff" />
@@ -361,7 +347,14 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
           ))}
 
           <Grid position={[0, 0, 0]} args={[10, 10]} cellColor="#1a1a2e" sectionColor="#2a2a3d" fadeDistance={12} infiniteGrid />
-          <OrbitControls makeDefault minDistance={0.3} maxDistance={10} />
+          <OrbitControls
+            makeDefault
+            target={[0, 1, 0]}
+            enableRotate={false}
+            enablePan={false}
+            minZoom={80}
+            maxZoom={600}
+          />
         </Canvas>
       </div>
     </div>
