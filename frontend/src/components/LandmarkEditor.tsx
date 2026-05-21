@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useEffect, useRef, useState, useCallback } from "react";
+import React, { Suspense, useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Canvas, useLoader, useFrame } from "@react-three/fiber";
 import {
   OrbitControls, Environment, Grid, Html, useGLTF, Line,
@@ -248,6 +248,65 @@ function Skeleton({ landmarks }: { landmarks: LandmarkPositions }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Non-interactive 3/4 preview. Clones the fitted model as a translucent "ghost"
+// so the user can confirm the auto-snapped joints sit inside the limb volume.
+// ─────────────────────────────────────────────────────────────────────────────
+function GhostBody({ source }: { source: THREE.Object3D }) {
+  const ghost = useMemo(() => {
+    const clone = source.clone(true);
+    clone.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.material = new THREE.MeshStandardMaterial({
+          color: "#6c63ff", transparent: true, opacity: 0.16,
+          depthWrite: false, side: THREE.DoubleSide,
+        });
+      }
+    });
+    return clone;
+  }, [source]);
+  return <primitive object={ghost} />;
+}
+
+function GhostPreview({
+  model, landmarks,
+}: {
+  model: THREE.Object3D | null;
+  landmarks: LandmarkPositions;
+}) {
+  return (
+    <div style={{
+      position: "absolute", right: 10, bottom: 10,
+      width: 180, height: 240, borderRadius: 10, overflow: "hidden",
+      border: "1px solid #2a2a3d", background: "rgba(8,8,18,0.92)",
+      pointerEvents: "none", zIndex: 10,
+    }}>
+      <div style={{
+        position: "absolute", top: 4, left: 8, zIndex: 1,
+        fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", color: "#6c63ff",
+      }}>
+        DEPTH PREVIEW
+      </div>
+      <Canvas
+        orthographic
+        camera={{ position: [3, 1.6, 3], zoom: 95, near: 0.01, far: 100 }}
+        onCreated={({ camera }) => camera.lookAt(0, 1, 0)}
+      >
+        <ambientLight intensity={0.8} />
+        <directionalLight position={[5, 10, 5]} intensity={0.8} />
+        {model && <GhostBody source={model} />}
+        <Skeleton landmarks={landmarks} />
+        {LANDMARKS.map(({ key, color }) => (
+          <mesh key={key} position={landmarks[key]} renderOrder={999}>
+            <sphereGeometry args={[0.035, 12, 12]} />
+            <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} depthTest={false} />
+          </mesh>
+        ))}
+      </Canvas>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main export
 // ─────────────────────────────────────────────────────────────────────────────
 interface LandmarkEditorProps {
@@ -451,6 +510,8 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
             maxZoom={600}
           />
         </Canvas>
+
+        {landmarks && <GhostPreview model={model} landmarks={landmarks} />}
       </div>
     </div>
   );
