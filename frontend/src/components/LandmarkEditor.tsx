@@ -7,7 +7,7 @@ import {
 } from "@react-three/drei";
 import { FBXLoader } from "three-stdlib";
 import * as THREE from "three";
-import { type LandmarkSet, getLandmarks } from "@/lib/api";
+import { type LandmarkSet, LANDMARK_KEYS, getLandmarks } from "@/lib/api";
 import { snapDepthToMeshCenter } from "@/lib/landmarkDepth";
 import { rayToFrontPlane } from "@/lib/landmarkDrag";
 import { SKELETON_EDGES } from "@/lib/landmarkSkeleton";
@@ -376,6 +376,27 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedKey, model]);
 
+  const landmarkSource  = useRef<"api" | "default" | null>(null);
+  const defaultsSnapped = useRef(false);
+
+  // Re-centre the depth of all 14 handles at their current (x, y).
+  const snapAllDepths = useCallback(() => {
+    if (!model) return;
+    setLandmarks((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      const lost: Record<string, boolean> = {};
+      for (const k of LANDMARK_KEYS) {
+        const [x, y, z] = prev[k];
+        const snap = snapDepthToMeshCenter(model, x, y, z);
+        next[k] = [x, y, snap.z];
+        lost[k] = !snap.hit;
+      }
+      setDepthLost(lost);
+      return next;
+    });
+  }, [model]);
+
   // Fetch landmarks from API on open, fall back to defaultLandmarks if fetch fails.
   // Only runs when rigId is provided; without rigId, handleBoundsReady sets defaults directly.
   useEffect(() => {
@@ -385,17 +406,35 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
       .then(({ data }) => {
         if (cancelled) return;
         setLandmarks(data.landmarks);
+        landmarkSource.current = "api";
       })
       .catch(() => {
         if (cancelled) return;
         setLandmarks(defaultLandmarks(bbox));
+        landmarkSource.current = "default";
       });
     return () => { cancelled = true; };
   }, [rigId, bbox]);
 
+  // Default landmarks are known depth-flat (all at the mesh z-centre). Snap them
+  // once the model is available. API-detected landmarks are left untouched.
+  useEffect(() => {
+    if (defaultsSnapped.current) return;
+    if (landmarkSource.current !== "default") return;
+    if (!model || !landmarks) return;
+    defaultsSnapped.current = true;
+    // One-shot: the `defaultsSnapped` ref guarantees this runs at most once, so
+    // there is no setState loop despite snapAllDepths updating landmark state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    snapAllDepths();
+  }, [model, landmarks, snapAllDepths]);
+
   const handleBoundsReady = useCallback((b: THREE.Box3) => {
     setBbox(b);
-    if (!rigId) setLandmarks(defaultLandmarks(b));
+    if (!rigId) {
+      setLandmarks(defaultLandmarks(b));
+      landmarkSource.current = "default";
+    }
   }, [rigId]);
 
   const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -473,6 +512,19 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
           }}
         >
           {submitting ? "Applying…" : "Apply rig"}
+        </button>
+
+        <button
+          onClick={snapAllDepths}
+          disabled={!landmarks || !model}
+          style={{
+            padding: "0.5rem", borderRadius: 7,
+            border: "1px solid rgba(108,99,255,0.4)", background: "rgba(108,99,255,0.1)",
+            color: !landmarks || !model ? "#555" : "#9b96ff",
+            cursor: !landmarks || !model ? "not-allowed" : "pointer", fontSize: "0.8rem", fontWeight: 700,
+          }}
+        >
+          Snap all depths
         </button>
 
         <button
