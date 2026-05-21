@@ -3,13 +3,14 @@
 import React, { Suspense, useEffect, useRef, useState, useCallback } from "react";
 import { Canvas, useLoader, useFrame } from "@react-three/fiber";
 import {
-  OrbitControls, Environment, Grid, Html, useGLTF,
+  OrbitControls, Environment, Grid, Html, useGLTF, Line,
 } from "@react-three/drei";
 import { FBXLoader } from "three-stdlib";
 import * as THREE from "three";
 import { type LandmarkSet, getLandmarks } from "@/lib/api";
 import { snapDepthToMeshCenter } from "@/lib/landmarkDepth";
 import { rayToFrontPlane } from "@/lib/landmarkDrag";
+import { SKELETON_EDGES } from "@/lib/landmarkSkeleton";
 
 // ── Target display height matching ModelViewer ────────────────────────────────
 const TARGET_HEIGHT = 2.0;
@@ -226,6 +227,27 @@ function GLBModel(props: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Live skeleton overlay — thin always-on-top lines between landmark handles.
+// A placement guide, not the final DEF rig.
+// ─────────────────────────────────────────────────────────────────────────────
+function Skeleton({ landmarks }: { landmarks: LandmarkPositions }) {
+  return (
+    <>
+      {SKELETON_EDGES.map(([a, b]) => (
+        <Line
+          key={`${a}-${b}`}
+          points={[landmarks[a], landmarks[b]]}
+          color="#00e5ff"
+          lineWidth={2}
+          depthTest={false}
+          renderOrder={997}
+        />
+      ))}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main export
 // ─────────────────────────────────────────────────────────────────────────────
 interface LandmarkEditorProps {
@@ -402,6 +424,8 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
           </Suspense>
 
           {/* Landmark spheres */}
+          {landmarks && <Skeleton landmarks={landmarks} />}
+
           {landmarks && LANDMARKS.map(({ key, label, color }) => (
             <DraggableLandmark
               key={key}
