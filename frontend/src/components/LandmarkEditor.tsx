@@ -8,6 +8,8 @@ import {
 import { FBXLoader } from "three-stdlib";
 import * as THREE from "three";
 import { type LandmarkSet, getLandmarks } from "@/lib/api";
+import { snapDepthToMeshCenter } from "@/lib/landmarkDepth";
+import { rayToFrontPlane } from "@/lib/landmarkDrag";
 
 // ── Target display height matching ModelViewer ────────────────────────────────
 const TARGET_HEIGHT = 2.0;
@@ -89,45 +91,84 @@ function defaultLandmarks(bbox: THREE.Box3): LandmarkPositions {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Landmark sphere
+// Draggable landmark handle. Pointer-down grabs it; pointer-move drags it in the
+// front plane; pointer-up drops it and triggers a depth snap in the parent.
 // ─────────────────────────────────────────────────────────────────────────────
-function LandmarkSphere({
-  position, color, selected, onSelect, label,
+function DraggableLandmark({
+  landmarkKey, position, color, label, depthLost, pulsing,
+  onDragStart, onDrag, onDragEnd,
 }: {
+  landmarkKey: keyof LandmarkPositions;
   position: [number, number, number];
   color: string;
-  selected: boolean;
-  onSelect: () => void;
   label: string;
+  depthLost: boolean;
+  pulsing: boolean;
+  onDragStart: (key: keyof LandmarkPositions) => void;
+  onDrag: (key: keyof LandmarkPositions, x: number, y: number) => void;
+  onDragEnd: (key: keyof LandmarkPositions, x: number, y: number) => void;
 }) {
   const ref = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   useFrame(() => {
-    if (ref.current) ref.current.scale.setScalar(selected ? 1.4 : hovered ? 1.2 : 1.0);
+    if (!ref.current) return;
+    const base = dragging ? 1.5 : hovered ? 1.2 : 1.0;
+    ref.current.scale.setScalar(base * (pulsing ? 1.5 : 1.0));
   });
 
   return (
     <group position={position}>
       <mesh
         ref={ref}
-        onClick={(e) => { e.stopPropagation(); onSelect(); }}
-        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = "pointer"; }}
-        onPointerOut={() => { setHovered(false); document.body.style.cursor = "default"; }}
         renderOrder={999}
+        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = "grab"; }}
+        onPointerOut={() => { setHovered(false); if (!dragging) document.body.style.cursor = "default"; }}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          (e.target as Element).setPointerCapture(e.pointerId);
+          setDragging(true);
+          onDragStart(landmarkKey);
+          document.body.style.cursor = "grabbing";
+        }}
+        onPointerMove={(e) => {
+          if (!dragging) return;
+          e.stopPropagation();
+          const pt = rayToFrontPlane(e.ray);
+          if (pt) onDrag(landmarkKey, pt.x, pt.y);
+        }}
+        onPointerUp={(e) => {
+          if (!dragging) return;
+          e.stopPropagation();
+          (e.target as Element).releasePointerCapture(e.pointerId);
+          setDragging(false);
+          document.body.style.cursor = "grab";
+          const pt = rayToFrontPlane(e.ray);
+          onDragEnd(landmarkKey, pt ? pt.x : position[0], pt ? pt.y : position[1]);
+        }}
       >
-        <sphereGeometry args={[0.025, 16, 16]} />
+        <sphereGeometry args={[0.03, 16, 16]} />
         <meshStandardMaterial
-          color={selected ? "#ffffff" : color}
-          emissive={selected ? color : hovered ? color : "#000"}
-          emissiveIntensity={selected ? 0.9 : hovered ? 0.4 : 0}
+          color={dragging ? "#ffffff" : color}
+          emissive={depthLost ? "#ffae00" : dragging || hovered ? color : "#000"}
+          emissiveIntensity={depthLost ? 0.8 : dragging ? 0.9 : hovered ? 0.4 : 0}
           depthTest={false}
         />
       </mesh>
+
+      {/* amber ring: depth snap could not find the mesh under this handle */}
+      {depthLost && (
+        <mesh renderOrder={998}>
+          <ringGeometry args={[0.045, 0.062, 24]} />
+          <meshBasicMaterial color="#ffae00" side={THREE.DoubleSide} depthTest={false} transparent opacity={0.85} />
+        </mesh>
+      )}
+
       <Html distanceFactor={6} style={{ pointerEvents: "none" }}>
         <div style={{
-          background: selected ? color : "rgba(0,0,0,0.75)",
-          color: "#fff", padding: "2px 7px", borderRadius: 4,
+          background: pulsing ? "#fff" : "rgba(0,0,0,0.75)",
+          color: pulsing ? "#000" : "#fff", padding: "2px 7px", borderRadius: 4,
           fontSize: 10, whiteSpace: "nowrap", fontWeight: 700,
           border: `1px solid ${color}`, userSelect: "none",
         }}>
@@ -201,6 +242,32 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
   const [model, setModel]             = useState<THREE.Object3D | null>(null);
 
   const handleModelReady = useCallback((o: THREE.Object3D) => setModel(o), []);
+
+  const [depthLost, setDepthLost] = useState<Record<string, boolean>>({});
+  const [pulseKey, setPulseKey]   = useState<keyof LandmarkPositions | null>(null);
+
+  const handleDragStart = useCallback((key: keyof LandmarkPositions) => {
+    setSelectedKey(key);
+  }, []);
+
+  // During a drag only x/y move; depth is left alone until the drop.
+  const handleDrag = useCallback((key: keyof LandmarkPositions, x: number, y: number) => {
+    setLandmarks((prev) => prev
+      ? { ...prev, [key]: [x, y, prev[key][2]] as [number, number, number] }
+      : prev);
+  }, []);
+
+  // On drop, raycast through the mesh and centre the handle's depth.
+  const handleDragEnd = useCallback((key: keyof LandmarkPositions, x: number, y: number) => {
+    const fallbackZ = landmarks?.[key]?.[2] ?? 0;
+    const snap = model
+      ? snapDepthToMeshCenter(model, x, y, fallbackZ)
+      : { z: fallbackZ, hit: true };
+    setLandmarks((prev) => prev
+      ? { ...prev, [key]: [x, y, snap.z] as [number, number, number] }
+      : prev);
+    setDepthLost((d) => ({ ...d, [key]: !snap.hit }));
+  }, [landmarks, model]);
 
   // Fetch landmarks from API on open, fall back to defaultLandmarks if fetch fails.
   // Only runs when rigId is provided; without rigId, handleBoundsReady sets defaults directly.
@@ -336,13 +403,17 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
 
           {/* Landmark spheres */}
           {landmarks && LANDMARKS.map(({ key, label, color }) => (
-            <LandmarkSphere
+            <DraggableLandmark
               key={key}
+              landmarkKey={key}
               position={landmarks[key]}
               color={color}
-              selected={selectedKey === key}
               label={label}
-              onSelect={() => setSelectedKey(key)}
+              depthLost={!!depthLost[key]}
+              pulsing={pulseKey === key}
+              onDragStart={handleDragStart}
+              onDrag={handleDrag}
+              onDragEnd={handleDragEnd}
             />
           ))}
 
