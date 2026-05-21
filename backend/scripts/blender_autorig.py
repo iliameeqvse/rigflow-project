@@ -1521,7 +1521,7 @@ def render_ortho_views(meshes, out_dir, image_size=512):
         scene.collection.objects.link(cam_obj)
 
         cam_obj.location = loc
-        rot_quat = (target - loc).to_track_quat("-Z", "Z")
+        rot_quat = (target - loc).to_track_quat("-Z", "Y")
         cam_obj.rotation_euler = rot_quat.to_euler()
 
         # Markers only in front/back — side views see a profile where the
@@ -1602,7 +1602,7 @@ def pixel_to_world_ray(view_name, px, py, image_size, ortho_scale, world_aabb):
     """Return (origin, direction) in world space for a pixel in an ortho view.
 
     Coordinate convention matches render_ortho_views cameras (to_track_quat
-    with up=+Z):
+    with up=+Y):
       front/back cameras: +X = world +X or -X; +Y = world +Z
       left/right cameras: +X = world -Y or +Y; +Y = world +Z
 
