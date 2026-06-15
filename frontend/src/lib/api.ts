@@ -161,6 +161,7 @@ export const LANDMARK_KEYS = [
   "left_hip", "right_hip",
   "left_knee", "right_knee",
   "left_ankle", "right_ankle",
+  "left_heel", "right_heel",
 ] as const;
 
 export type LandmarkKey = typeof LANDMARK_KEYS[number];

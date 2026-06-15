@@ -5,7 +5,7 @@ django-filter==24.3
 djangorestframework-simplejwt==5.3.1
 django-allauth==0.63.6
 dj-rest-auth==6.0.0
-psycopg2-binary==2.9.9
+psycopg2-binary>=2.9.9
 django-storages==1.14.4
 boto3==1.35.0
 Pillow==10.4.0
@@ -29,4 +29,3 @@ numpy==1.26.4
 gunicorn==23.0.0
 sentry-sdk==2.14.0
 anthropic>=0.40.0
-Pillow>=10.0.0

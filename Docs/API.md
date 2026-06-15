@@ -118,7 +118,7 @@ Re-run auto-rig on the original file. Resets status to `pending`, clears `bone_m
 
 ### `POST /rigs/{id}/rerig-landmarks/`
 
-Re-rig with user-placed landmarks from the editor. Required body — **all 14 keys must be present**:
+Re-rig with user-placed landmarks from the editor. Required body — **all 16 keys must be present**:
 
 ```json
 {
@@ -130,7 +130,8 @@ Re-rig with user-placed landmarks from the editor. Required body — **all 14 ke
     "left_wrist":     [x, y, z],   "right_wrist":    [x, y, z],
     "left_hip":       [x, y, z],   "right_hip":      [x, y, z],
     "left_knee":      [x, y, z],   "right_knee":     [x, y, z],
-    "left_ankle":     [x, y, z],   "right_ankle":    [x, y, z]
+    "left_ankle":     [x, y, z],   "right_ankle":    [x, y, z],
+    "left_heel":      [x, y, z],   "right_heel":     [x, y, z]
   }
 }
 ```
@@ -140,16 +141,18 @@ Coordinates are floats in the **three.js editor frame** (Y-up; the model is norm
 Validation (in `_validate_landmark_payload`):
 
 - Must be an object. Each value must be a 3-element array of finite numbers.
-- Missing any of the 14 keys → `400` with the list of missing names.
+- Missing any of the 16 keys → `400` with the list of missing names.
 - Non-numeric / non-finite coordinate → `400` naming the offending key.
 
 The pipeline preserves the previous `rigged_glb` on failure for the same reason as `/rerig/`.
+
+> **Note**: heel landmarks are stored and validated but `place_bones_from_landmarks` does not yet read them. Wiring heel → foot/shin bone placement is pending. They are required in the payload now so the schema doesn't need a breaking change when the wiring lands.
 
 For the landmark anatomy and how the script consumes them, see [RIGGING_PIPELINE](RIGGING_PIPELINE.md#landmarks).
 
 ### `GET /rigs/{id}/landmarks/`
 
-Fetch the 14-key landmark dict the editor uses to render draggable markers. **Public, no auth, no throttle.**
+Fetch the 16-key landmark dict the editor uses to render draggable markers. **Public, no auth, no throttle.**
 
 ```json
 {
@@ -157,7 +160,7 @@ Fetch the 14-key landmark dict the editor uses to render draggable markers. **Pu
     "chin":           [0.0,  1.84, 0.0],
     "groin":          [0.0,  1.0,  0.0],
     "left_shoulder":  [0.2,  1.64, 0.0],
-    ... (12 more keys)
+    ... (13 more keys, including left_heel / right_heel)
   }
 }
 ```

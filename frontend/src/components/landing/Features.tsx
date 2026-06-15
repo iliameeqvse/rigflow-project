@@ -122,7 +122,7 @@ function FeatureCard({
           background: useTransform(
             [glareX, glareY],
             ([x, y]) =>
-              `radial-gradient(circle 240px at ${x} ${y}, rgba(163,230,53,0.18), transparent 60%)`,
+              `radial-gradient(circle 240px at ${x} ${y}, rgba(204,255,0,0.16), transparent 60%)`,
           ),
         }}
       />

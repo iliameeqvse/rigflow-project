@@ -1,6 +1,57 @@
+import json as json_mod
+import struct
+
 from django.utils.text import slugify
 from rest_framework import serializers
 from .models import Animation, AnimationCategory
+
+
+def _extract_animation_metadata(file) -> tuple[int, float]:
+    """Return (duration_frames, frame_rate) from a GLB or GLTF file.
+
+    GLB stores a GLTF JSON chunk starting at byte 20. GLTF is plain JSON.
+    The animation input accessor's `max[0]` is the clip duration in seconds
+    (precomputed by the exporter; no binary parsing needed).
+    Returns (0, 30.0) for FBX or on any parse error.
+    """
+    name = getattr(file, "name", "") or ""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+    if ext not in ("glb", "gltf"):
+        return 0, 30.0
+
+    try:
+        file.seek(0)
+        raw = file.read()
+        file.seek(0)
+
+        if ext == "glb":
+            # GLB header: magic(4) version(4) length(4) | JSON chunk: len(4) type(4) data
+            if len(raw) < 20 or struct.unpack_from("<I", raw, 0)[0] != 0x46546C67:
+                return 0, 30.0
+            json_len = struct.unpack_from("<I", raw, 12)[0]
+            gltf = json_mod.loads(raw[20:20 + json_len])
+        else:
+            gltf = json_mod.loads(raw)
+
+        accessors = gltf.get("accessors", [])
+        max_time = 0.0
+        for anim in gltf.get("animations", []):
+            for sampler in anim.get("samplers", []):
+                idx = sampler.get("input")
+                if idx is not None and idx < len(accessors):
+                    acc_max = accessors[idx].get("max", [])
+                    if acc_max:
+                        max_time = max(max_time, float(acc_max[0]))
+
+        if max_time <= 0:
+            return 0, 30.0
+
+        fps = 30.0
+        return round(max_time * fps), fps
+
+    except Exception:
+        return 0, 30.0
 
 
 class AnimationCategorySerializer(serializers.ModelSerializer):
@@ -86,12 +137,16 @@ class AnimationUploadSerializer(serializers.Serializer):
         if request and request.user.is_authenticated:
             uploader = getattr(request.user, "profile", None)
 
+        duration_frames, frame_rate = _extract_animation_metadata(validated_data["file"])
+
         return Animation.objects.create(
             name=name,
             slug=slug,
             description=validated_data.get("description", ""),
             category=category,
             gltf_file=validated_data["file"],
+            duration_frames=duration_frames,
+            frame_rate=frame_rate,
             is_looping=validated_data.get("is_looping", False),
             tags=validated_data.get("tags", []),
             uploaded_by=uploader,

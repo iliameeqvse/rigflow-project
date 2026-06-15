@@ -57,10 +57,12 @@ const LANDMARKS = [
   { key: "left_hip"       as const, label: "Left Hip",       color: "#ef476f", group: "Leg L" },
   { key: "left_knee"      as const, label: "Left Knee",      color: "#ef476f", group: "Leg L" },
   { key: "left_ankle"     as const, label: "Left Ankle",     color: "#ef476f", group: "Leg L" },
+  { key: "left_heel"      as const, label: "Left Heel",      color: "#ef476f", group: "Leg L" },
   // Right leg — pink
   { key: "right_hip"      as const, label: "Right Hip",      color: "#ef476f", group: "Leg R" },
   { key: "right_knee"     as const, label: "Right Knee",     color: "#ef476f", group: "Leg R" },
   { key: "right_ankle"    as const, label: "Right Ankle",    color: "#ef476f", group: "Leg R" },
+  { key: "right_heel"     as const, label: "Right Heel",     color: "#ef476f", group: "Leg R" },
 ];
 
 const GROUPS = ["Head", "Torso", "Arm L", "Arm R", "Leg L", "Leg R"] as const;
@@ -88,6 +90,9 @@ function defaultLandmarks(bbox: THREE.Box3): LandmarkPositions {
     right_knee:     [cx - w * 0.10,  bbox.min.y + h * 0.25, cz],
     left_ankle:     [cx + w * 0.10,  bbox.min.y,            cz],
     right_ankle:    [cx - w * 0.10,  bbox.min.y,            cz],
+    // Heel: behind the ankle (−z) at floor level.
+    left_heel:      [cx + w * 0.10,  bbox.min.y,            cz - w * 0.12],
+    right_heel:     [cx - w * 0.10,  bbox.min.y,            cz - w * 0.12],
   };
 }
 
@@ -237,7 +242,7 @@ function Skeleton({ landmarks }: { landmarks: LandmarkPositions }) {
         <Line
           key={`${a}-${b}`}
           points={[landmarks[a], landmarks[b]]}
-          color="#00e5ff"
+          color="#00f0ff"
           lineWidth={2}
           depthTest={false}
           renderOrder={997}
@@ -257,7 +262,7 @@ function GhostBody({ source }: { source: THREE.Object3D }) {
     clone.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.material = new THREE.MeshStandardMaterial({
-          color: "#6c63ff", transparent: true, opacity: 0.16,
+          color: "#00f0ff", transparent: true, opacity: 0.16,
           depthWrite: false, side: THREE.DoubleSide,
         });
       }
@@ -277,12 +282,12 @@ function GhostPreview({
     <div style={{
       position: "absolute", right: 10, bottom: 10,
       width: 180, height: 240, borderRadius: 10, overflow: "hidden",
-      border: "1px solid #2a2a3d", background: "rgba(8,8,18,0.92)",
+      border: "1px solid #313b4a", background: "rgba(11,14,20,0.92)",
       pointerEvents: "none", zIndex: 10,
     }}>
       <div style={{
         position: "absolute", top: 4, left: 8, zIndex: 1,
-        fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", color: "#6c63ff",
+        fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", color: "#00f0ff",
       }}>
         DEPTH PREVIEW
       </div>
@@ -405,7 +410,10 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
     getLandmarks(rigId)
       .then(({ data }) => {
         if (cancelled) return;
-        setLandmarks(data.landmarks);
+        // Backfill any keys the stored landmarks lack (e.g. heels on rigs
+        // generated before heels were added) from geometric defaults, so
+        // every handle has a position and the rerig payload stays complete.
+        setLandmarks({ ...defaultLandmarks(bbox), ...data.landmarks });
         landmarkSource.current = "api";
       })
       .catch(() => {
@@ -452,7 +460,7 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
       {/* ── Side panel ── */}
       <div style={{
         width: 230, flexShrink: 0,
-        background: "#0d0d1a", border: "1px solid #2a2a3d",
+        background: "#0b0e14", border: "1px solid #313b4a",
         borderRadius: 12, padding: "1rem",
         display: "flex", flexDirection: "column", gap: "0.55rem",
         maxHeight: 560, overflowY: "auto",
@@ -482,7 +490,7 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
                   <button key={key} onClick={() => handleSelectRow(key)} style={{
                     display: "flex", alignItems: "center", gap: "0.55rem",
                     padding: "0.45rem 0.7rem", borderRadius: 7,
-                    border: `1px solid ${active ? color : "#2a2a3d"}`,
+                    border: `1px solid ${active ? color : "#313b4a"}`,
                     background: active ? `${color}18` : "transparent",
                     color: "#ccc", cursor: "pointer", fontSize: "0.84rem",
                     fontWeight: active ? 700 : 400, textAlign: "left",
@@ -505,8 +513,8 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
           disabled={!landmarks || submitting}
           style={{
             padding: "0.65rem", borderRadius: 8, border: "none",
-            background: !landmarks || submitting ? "#2a2a3d" : "linear-gradient(135deg,#6c63ff,#00d4ff)",
-            color: !landmarks || submitting ? "#555" : "#fff",
+            background: !landmarks || submitting ? "#313b4a" : "linear-gradient(135deg,#ccff00,#00f0ff)",
+            color: !landmarks || submitting ? "#5e6877" : "#0b0e14",
             fontWeight: 700, cursor: !landmarks || submitting ? "not-allowed" : "pointer",
             fontSize: "0.88rem",
           }}
@@ -531,7 +539,7 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
           onClick={() => bbox && setLandmarks(defaultLandmarks(bbox))}
           style={{
             padding: "0.45rem", borderRadius: 7,
-            border: "1px solid #2a2a3d", background: "transparent",
+            border: "1px solid #313b4a", background: "transparent",
             color: "#666", cursor: "pointer", fontSize: "0.78rem",
           }}
         >
@@ -542,17 +550,17 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
       {/* ── Canvas ── */}
       <div style={{
         flex: 1, height: 560, position: "relative",
-        background: "linear-gradient(135deg,#0a0a14,#0d0d20)",
+        background: "linear-gradient(135deg,#0b0e14,#161b22)",
         borderRadius: 12, overflow: "hidden",
-        border: "2px solid #2a2a3d",
+        border: "2px solid #313b4a",
       }}>
         <Canvas orthographic camera={{ position: [0, 1, 4], zoom: 220, near: 0.01, far: 100 }}>
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 10, 5]} intensity={1} />
-          <pointLight position={[-5, 5, -5]} intensity={0.3} color="#6c63ff" />
+          <pointLight position={[-5, 5, -5]} intensity={0.3} color="#00f0ff" />
           <Environment preset="studio" />
 
-          <Suspense fallback={<Html center><div style={{ color: "#6c63ff" }}>Loading…</div></Html>}>
+          <Suspense fallback={<Html center><div style={{ color: "#00f0ff" }}>Loading…</div></Html>}>
             {ext === "fbx" || ext === "obj"
               ? <FBXModel url={glbUrl} onBoundsReady={handleBoundsReady} onModelReady={handleModelReady} />
               : <GLBModel url={glbUrl} onBoundsReady={handleBoundsReady} onModelReady={handleModelReady} />
@@ -577,7 +585,7 @@ export function LandmarkEditor({ glbUrl, rigId, onSubmit, submitting = false }: 
             />
           ))}
 
-          <Grid position={[0, 0, 0]} args={[10, 10]} cellColor="#1a1a2e" sectionColor="#2a2a3d" fadeDistance={12} infiniteGrid />
+          <Grid position={[0, 0, 0]} args={[10, 10]} cellColor="#1c2330" sectionColor="#313b4a" fadeDistance={12} infiniteGrid />
           <OrbitControls
             makeDefault
             target={[0, 1, 0]}

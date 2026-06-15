@@ -26,15 +26,82 @@ VISION_PROMPT_TEMPLATE = (
     "Side views (left, right) have no markers — infer sides there from the\n"
     "front/back labels you already committed to.\n"
     "\n"
+    "## Anatomical proportions — use these as priors\n"
+    "These height percentages are measured from the bottom of the feet to the top\n"
+    "of the head (0% = feet, 100% = crown). They are averages for a human body in\n"
+    "a neutral pose and should guide your estimates when exact joint features are\n"
+    "ambiguous (baggy clothing, low mesh density, stylised proportions):\n"
+    "\n"
+    "  chin          ~93 %   (base of jaw — NOT the nose tip or forehead)\n"
+    "  shoulder      ~82 %   (glenohumeral joint — where upper arm meets torso)\n"
+    "  elbow         ~67 %   (centre of the elbow crease)\n"
+    "  wrist         ~50 %   (just above the hand — NOT the finger tips)\n"
+    "  hip           ~53 %   (femoral head — slightly above the groin)\n"
+    "  groin         ~50 %   (pubic symphysis — between the inner thighs)\n"
+    "  knee          ~27 %   (centre of the patella)\n"
+    "  ankle         ~ 7 %   (lateral malleolus — the bony bump on the outer ankle)\n"
+    "  heel          ~ 3 %   (rear-most point of the foot, at ground level)\n"
+    "\n"
+    "In a 512×512 image where the body fills roughly 90 % of the frame height\n"
+    "(head crown at y ≈ 30, feet at y ≈ 480, body span ≈ 450 px):\n"
+    "\n"
+    "  chin     → y ≈  62   shoulder  → y ≈ 111   elbow  → y ≈ 179\n"
+    "  wrist    → y ≈ 255   hip       → y ≈ 242   groin  → y ≈ 255\n"
+    "  knee     → y ≈ 359   ankle     → y ≈ 449   heel   → y ≈ 467\n"
+    "\n"
+    "Horizontal width cues (front view, body centred at x ≈ 256):\n"
+    "  shoulders span roughly 35–45 % of frame width each side of centre\n"
+    "  hips      span roughly 15–20 % of frame width each side of centre\n"
+    "  wrists    sit at roughly the same x as the outer shoulder (T-pose)\n"
+    "            or slightly inward (A-pose)\n"
+    "\n"
+    "Common pitfalls — AVOID these:\n"
+    "  * Do NOT place wrist on a weapon hilt, staff, or tool held in the hand —\n"
+    "    place it on the wrist joint of the arm itself.\n"
+    "  * Do NOT let a hat or head accessory pull chin upward — chin is the jaw,\n"
+    "    not the top of the head decoration.\n"
+    "  * Do NOT place shoulder on shoulder armour or epaulette surface —\n"
+    "    place it on the underlying shoulder joint beneath the clothing.\n"
+    "  * Do NOT place ankle on a boot sole — ankle is the joint above the foot.\n"
+    "  * Heel is the rear-most point of the foot mesh at ground level, NOT the\n"
+    "    ankle or sole mid-point.\n"
+    "\n"
+    "## Reference example — standard T-pose, front view\n"
+    "Below is the expected output for a typical humanoid character in a T-pose\n"
+    "facing the front camera (character's left = RED-cube side).\n"
+    "Use this as a calibration reference for scale and proportion:\n"
+    "\n"
+    "  front: {\n"
+    "    chin:           [256,  62],   # jaw base, head centre\n"
+    "    groin:          [256, 255],   # between inner thighs\n"
+    "    left_shoulder:  [370, 111],   # glenohumeral, RED-cube side\n"
+    "    right_shoulder: [142, 111],   # glenohumeral, BLUE-cube side\n"
+    "    left_elbow:     [400, 179],   # elbow crease, RED-cube side\n"
+    "    right_elbow:    [112, 179],   # elbow crease, BLUE-cube side\n"
+    "    left_wrist:     [420, 255],   # wrist joint, RED-cube side\n"
+    "    right_wrist:     [92, 255],   # wrist joint, BLUE-cube side\n"
+    "    left_hip:       [290, 242],   # femoral head, RED-cube side\n"
+    "    right_hip:      [222, 242],   # femoral head, BLUE-cube side\n"
+    "    left_knee:      [283, 359],   # patella, RED-cube side\n"
+    "    right_knee:     [229, 359],   # patella, BLUE-cube side\n"
+    "    left_ankle:     [279, 449],   # lateral malleolus, RED-cube side\n"
+    "    right_ankle:    [233, 449],   # lateral malleolus, BLUE-cube side\n"
+    "    left_heel:      [271, 467],   # rear foot, ground level, RED-cube side\n"
+    "    right_heel:     [241, 467],   # rear foot, ground level, BLUE-cube side\n"
+    "  }\n"
+    "  back/left/right: same joints, adjusted for that camera angle; occlude\n"
+    "  landmarks hidden behind the body with null.\n"
+    "\n"
     "## Task\n"
-    "Identify the pixel coordinates of these 14 anatomical landmarks IN EACH VIEW:\n"
+    "Identify the pixel coordinates of these 16 anatomical landmarks IN EACH VIEW:\n"
     "  chin, groin,\n"
-    "  left_shoulder, right_shoulder,\n"
-    "  left_elbow,    right_elbow,\n"
-    "  left_wrist,    right_wrist,\n"
-    "  left_hip,      right_hip,\n"
-    "  left_knee,     right_knee,\n"
-    "  left_ankle,    right_ankle.\n"
+    "  left_shoulder,  right_shoulder,\n"
+    "  left_elbow,     right_elbow,\n"
+    "  left_wrist,     right_wrist,\n"
+    "  left_hip,       right_hip,\n"
+    "  left_knee,      right_knee,\n"
+    "  left_ankle,     right_ankle,\n"
+    "  left_heel,      right_heel.\n"
     "\n"
     "Pixel origin is top-left; x grows right, y grows down.\n"
     "If a landmark is occluded or not visible in a given view, set it to null for\n"
@@ -53,13 +120,19 @@ VISION_PROMPT_TEMPLATE = (
     "Respond ONLY with valid JSON matching this schema — no prose, no markdown fence:\n"
     "{\n"
     '  "landmarks": {\n'
-    '    "front": {"chin": [x, y], "groin": [x, y], "left_shoulder": [x, y], "right_shoulder": [x, y],\n'
-    '              "left_elbow": [x, y], "right_elbow": [x, y], "left_wrist": [x, y], "right_wrist": [x, y],\n'
-    '              "left_hip": [x, y], "right_hip": [x, y], "left_knee": [x, y], "right_knee": [x, y],\n'
-    '              "left_ankle": [x, y], "right_ankle": [x, y]},\n'
-    '    "back":  { ...same 14 keys, null where occluded... },\n'
-    '    "left":  { ...same 14 keys, null where occluded... },\n'
-    '    "right": { ...same 14 keys, null where occluded... }\n'
+    '    "front": {\n'
+    '      "chin": [x, y], "groin": [x, y],\n'
+    '      "left_shoulder": [x, y],  "right_shoulder": [x, y],\n'
+    '      "left_elbow": [x, y],     "right_elbow": [x, y],\n'
+    '      "left_wrist": [x, y],     "right_wrist": [x, y],\n'
+    '      "left_hip": [x, y],       "right_hip": [x, y],\n'
+    '      "left_knee": [x, y],      "right_knee": [x, y],\n'
+    '      "left_ankle": [x, y],     "right_ankle": [x, y],\n'
+    '      "left_heel": [x, y],      "right_heel": [x, y]\n'
+    "    },\n"
+    '    "back":  { ...same 16 keys, null where occluded... },\n'
+    '    "left":  { ...same 16 keys, null where occluded... },\n'
+    '    "right": { ...same 16 keys, null where occluded... }\n'
     "  },\n"
     '  "mesh_objects": {\n'
     '    "<object_name>": "body" | "hat" | "accessory_held_left" | "accessory_held_right" | "clothing" | "other"\n'

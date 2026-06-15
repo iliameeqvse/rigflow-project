@@ -32,12 +32,16 @@ How RigFlow's pieces fit together end-to-end. Read [PRODUCT_REQUIREMENTS](PRODUC
         │                                              ▼
         │                                ┌──────────────────────────┐
         │                                │ tasks._run_rig_pipeline  │
-        │                                │  • write upload to tmp   │
-        │                                │  • subprocess: blender   │
-        │                                │      --background        │
-        │                                │      --python autorig.py │
-        │                                │  • read GLB + bones.json │
-        │                                │  • save to RiggedModel   │
+        │                                │  Phase 1 (vision path):  │
+        │                                │  • blender --render-ortho│
+        │                                │    → 4 PNG views         │
+        │                                │  • Claude Haiku vision   │
+        │                                │    → pixel landmark seeds│
+        │                                │  Phase 2 (always):       │
+        │                                │  • blender full rig      │
+        │                                │  • sanity cascade        │
+        │                                │    (AI → geo → AABB)     │
+        │                                │  • save GLB + landmarks  │
         │                                └─────────────┬────────────┘
         │                                              │
         │  GET /api/v1/rigs/{id}/status/   (polled)    │
@@ -78,7 +82,8 @@ rigged_glb           FileField   (output)
 preview_thumbnail    ImageField  (output)
 bone_mapping         JSON        (Rigify→Mixamo name map, written by Blender)
 bone_corrections     JSON        (last user-submitted landmarks payload from /rerig-landmarks/)
-landmarks            JSON        (14-key auto-detected landmarks in three.js space; served via /rigs/{id}/landmarks/)
+landmarks            JSON        (16-key auto-detected landmarks in three.js space; served via /rigs/{id}/landmarks/)
+landmark_debug_image ImageField  (2×2 annotated render comparing AI-detected vs final landmark positions; llm_vision path only)
 detected_pose        "t_pose" | "a_pose" | "arms_down" | "unclear"
 pose_angle_deg       float       (arm tilt from horizontal, see RIGGING_PIPELINE § Pose detection)
 pose_confidence      float       ∈ [0, 1]
@@ -137,7 +142,7 @@ Settings module is split:
 
 Override with `DJANGO_SETTINGS_MODULE=rigflow.settings.production`.
 
-Key environment variables (production): `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, `BLENDER_PATH` (defaults to `/usr/bin/blender`), `AWS_BUCKET_NAME` (optional, switches to S3).
+Key environment variables (production): `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, `BLENDER_PATH` (set automatically by `Dockerfile.celery` to `/usr/local/bin/blender`), `LANDMARK_VISION_PROVIDER` (`none` or `claude`), `ANTHROPIC_API_KEY` (required when provider=claude), `AWS_BUCKET_NAME` (optional, switches to S3).
 
 ## Frontend layout
 

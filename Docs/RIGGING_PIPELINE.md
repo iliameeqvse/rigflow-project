@@ -24,27 +24,48 @@ For each one, the underlying driver is `tasks._run_rig_pipeline(rig_id, ...)`. I
 
 1. **Move row to `processing`**. Push a `progress` event via Channels to group `user_{user_id}`.
 2. **Write the upload to a temp dir.** Blender works on disk, not file-like objects.
-3. **Spawn Blender headlessly:**
+3. **Phase 1 — ortho render + AI landmark detection** (skipped on user-landmark rerigs):
 
    ```
-   blender --background --python backend/scripts/blender_autorig.py -- \
-       --input         <tmp>/<original>.<ext> \
+   blender --background --python blender_autorig.py -- \
+       --input <tmp>/input.<ext> --output /dev/null --bones /dev/null \
+       --format <ext> --render-ortho-views \
+       --ortho-render-dir <tmp>/ortho/ \
+       --ai-request-out  <tmp>/ai_request.json \
+       [--initial-rotation-x ° ...]
+   ```
+
+   Blender renders four 512×512 orthographic PNGs (front/back/left/right) and writes a JSON request payload. `tasks.py` reads it, calls the **Claude Haiku 4.5 vision API** (`LANDMARK_VISION_PROVIDER=claude`) with all four images, and writes a JSON response back to disk with pixel-space landmark seeds per view.
+
+   If the vision call fails, times out, or the provider is `none`, the pipeline continues without the AI response and uses geometry-only detection.
+
+4. **Phase 2 — full rig pipeline:**
+
+   ```
+   blender --background --python blender_autorig.py -- \
+       --input         <tmp>/input.<ext> \
        --output        <tmp>/rigged.glb \
        --bones         <tmp>/bones.json \
        --pose          <tmp>/pose.json \
        --landmarks-out <tmp>/landmarks.json \
        --format        <ext> \
-       [--initial-rotation-x ° --initial-rotation-y ° --initial-rotation-z °] \
-       [--initial-rotation-qx --qy --qz --qw] \
-       [--landmarks '<14-key JSON dict>']
+       [--landmarks-from-ai <tmp>/ai_response.json] \
+       [--landmark-pixels-out <tmp>/landmark_pixels.json] \
+       [--camera-params       <tmp>/ai_request.json] \
+       [--landmarks '<16-key JSON dict>']   ← only on rerig-landmarks
    ```
 
    - `--background` runs without UI.
-   - The `--` separates Blender's args from the script's args; everything after is parsed by `argparse` inside `blender_autorig.py`.
-   - `--landmarks-out` and `--pose` are sidecar paths Blender writes to so the driver can persist the auto-detected landmarks and pose classification onto the row.
-   - `--landmarks` is the only flag that switches behaviour: when present, the bones are placed from the supplied landmarks instead of the auto-detected ones (used by the `/rerig-landmarks/` flow).
+   - The `--` separates Blender's args from the script's args; everything after is parsed by `argparse`.
+   - `--landmarks-from-ai` feeds the AI pixel seeds; Blender raycasts them to 3D world coords, then geometry-refines each seed to the nearest anatomically-meaningful mesh feature.
+   - `--landmarks-out` and `--pose` are sidecar paths Blender writes so the driver can persist auto-detected landmarks and pose classification.
+   - `--landmarks` (user-supplied) skips auto-detect entirely — only present on `/rerig-landmarks/` rerigs.
 
-4. **Inside Blender** (`blender_autorig.py`):
+5. **Sanity-check cascade** (in `tasks.py`, after Phase 2):
+
+   The 16-key landmark JSON written by Blender is validated by `apps/rigging/sanity.py`. If the AI path produced landmarks that fail anatomical checks (groin above chin, severe asymmetry, etc.), the pipeline **re-runs Blender in geometry-only mode** as a fallback. If that also fails sanity, AABB defaults are used so the rig always finishes as `done`. `detection_method` records which path succeeded.
+
+6. **Inside Blender** (`blender_autorig.py`):
    - Import the mesh (FBX / GLB / GLTF / OBJ → corresponding `bpy.ops.import_scene.*`).
    - Apply the user's preview-space rotation (no automatic axis guessing — both sides agree on the canonical Z-up frame before any user input).
    - **Build a Rigify human metarig** at default size — this is the canonical scale target.
@@ -59,25 +80,27 @@ For each one, the underlying driver is `tasks._run_rig_pipeline(rig_id, ...)`. I
    - Build the **bone mapping** dict — Rigify bone names → standard Mixamo names, so retargeted animations bind cleanly.
    - Export GLB → `--output`. Write bone map → `--bones`. Write pose → `--pose`. Write detected landmarks → `--landmarks-out`.
 
-5. **Back in the Django process**, `_run_rig_pipeline` reads the GLB, `bones.json`, `pose.json`, and `landmarks.json`, saves them onto the `RiggedModel` row (`rigged_glb`, `bone_mapping`, `landmarks`, `detected_pose` / `pose_angle_deg` / `pose_confidence`), and sets `status = "done"`.
+7. **Back in the Django process**, `_run_rig_pipeline` reads the GLB, `bones.json`, `pose.json`, `landmarks.json`, and (if AI path) `landmark_pixels.json`. It saves onto the `RiggedModel` row (`rigged_glb`, `bone_mapping`, `landmarks`, `detected_pose` / `pose_angle_deg` / `pose_confidence`, `detection_method`, `landmark_debug_image`), and sets `status = "done"`.
    - On any subprocess error: capture stdout into `rig_log`, save `error_message`, set `status = "failed"`.
+   - If AI path succeeded, builds and saves a 2×2 annotated debug image (`landmark_debug_image`) comparing AI-detected vs final landmark pixel positions.
 
-6. **Final WS event** with `{step: "Done", pct: 100}` (or failed equivalent).
+8. **Final WS event** with `{step: "Done", pct: 100}` (or failed equivalent).
 
 ## Landmarks
 
-**Fourteen** labelled world-space points that anchor every major bone. The schema is the `LANDMARK_KEYS` tuple in both `backend/scripts/blender_autorig.py` and `backend/apps/rigging/views.py`:
+**Sixteen** labelled world-space points that anchor every major bone. The schema is the `LANDMARK_KEYS` tuple in `backend/scripts/blender_autorig.py`, `backend/apps/rigging/views.py`, and `frontend/src/lib/api.ts`:
 
-| Key | Anchors |
-|---|---|
-| `chin` | Top of the spine — places the head bone tip and clamps neck length |
-| `groin` | Pelvis / root of the spine |
-| `left_shoulder` · `right_shoulder` | Top of upper-arm chains |
-| `left_elbow` · `right_elbow` | Upper arm → forearm joint |
-| `left_wrist` · `right_wrist` | Forearm → hand joint |
-| `left_hip` · `right_hip` | Top of thigh chains |
-| `left_knee` · `right_knee` | Thigh → shin joint |
-| `left_ankle` · `right_ankle` | Bottom of leg chains |
+| Key | Anchors | Notes |
+|---|---|---|
+| `chin` | Top of the spine — places the head bone tip and clamps neck length | |
+| `groin` | Pelvis / root of the spine | |
+| `left_shoulder` · `right_shoulder` | Top of upper-arm chains | |
+| `left_elbow` · `right_elbow` | Upper arm → forearm joint | |
+| `left_wrist` · `right_wrist` | Forearm → hand joint | |
+| `left_hip` · `right_hip` | Top of thigh chains | |
+| `left_knee` · `right_knee` | Thigh → shin joint | |
+| `left_ankle` · `right_ankle` | Bottom of leg chains | |
+| `left_heel` · `right_heel` | Back of foot | Editable + stored; `place_bones_from_landmarks` does not yet read them — bone wiring is pending |
 
 Each value is a 3-tuple of floats in the **three.js editor frame** (Y-up; the model is normalized to `THREE_DISPLAY_HEIGHT = 2.0` units tall). The script converts to/from Blender world coords using the **metarig height** as the canonical reference — *not* the live mesh AABB, because props (top hats, eye spheres, microphones) inflate the bounding box and would scale every bone position incorrectly.
 
@@ -85,11 +108,12 @@ Each value is a 3-tuple of floats in the **three.js editor frame** (Y-up; the mo
 
 | Source | When | How |
 |---|---|---|
-| **Auto-detect** (default) | Initial `POST /rigs/` and `POST /rigs/{id}/rerig/` | `detect_landmarks()` runs `_promote_legacy_landmarks` on a 6-point seed, then upgrades for high-confidence T-poses with vertex extremities (wrists, ankles) and Z-slice analysis (chin, shoulders, groin, hips). Stored on `RiggedModel.landmarks`. |
-| **User-supplied** | `POST /rigs/{id}/rerig-landmarks/` | All 14 keys must be present (validated by `_validate_landmark_payload`). The pipeline skips auto-detect and feeds these straight into `place_bones_from_landmarks`. |
+| **AI vision + geometry** (default) | Initial `POST /rigs/` and `POST /rigs/{id}/rerig/` when `LANDMARK_VISION_PROVIDER=claude` | Phase 1 renders four orthographic views, Claude Haiku 4.5 returns pixel-space seeds, Blender raycasts each seed to 3D and refines to the nearest anatomical mesh feature. Sanity-checked; falls back to geometry if it fails. |
+| **Geometry-only** | When `LANDMARK_VISION_PROVIDER=none` or AI phase fails/times out | `detect_landmarks()` uses vertex extremities (wrists, ankles) and AABB ratios. Sanity-checked; falls back to AABB defaults if it fails. |
+| **User-supplied** | `POST /rigs/{id}/rerig-landmarks/` | All 16 keys must be present (validated by `_validate_landmark_payload`). The pipeline skips auto-detect entirely. |
 | **Legacy fallback** | `GET /rigs/{id}/landmarks/` for rigs that pre-date the feature | `legacy_landmarks.default_landmarks_for_rig()` returns AABB defaults at unit height so the editor has draggable starting points instead of all-zeros. |
 
-Missing any of the 14 keys on `/rerig-landmarks/` → `400` with the offending key name.
+Missing any of the 16 keys on `/rerig-landmarks/` → `400` with the offending key name.
 
 The frontend captures and edits these points with `LandmarkEditor.tsx`, fetched via `GET /rigs/{id}/landmarks/`.
 
@@ -170,4 +194,4 @@ Both rerig endpoints reset the row's `status` and clear `bone_mapping` / `error_
 | Finger / toe segments float disconnected | Hand or foot bone moved without shifting its descendants | `place_bones_from_landmarks` delta-shifts descendants of `hand.{L,R}` / `foot.{L,R}` / `toe.{L,R}` — make sure that block still runs |
 | `rerig` 429s | `rig_upload` throttle (10/hour) — Blender is expensive | Wait or raise the rate in `settings/base.py` |
 
-For the full Blender script, see `backend/scripts/blender_autorig.py`. For a smoke test of the 6→14 landmark adapter that runs without Blender, see `backend/scripts/_test_landmark_promotion.py`.
+For the full Blender script, see `backend/scripts/blender_autorig.py`. For a smoke test of the 6→16 landmark adapter (internal; promotes a 6-key seed to the full 16-key schema) that runs without Blender, see `backend/scripts/_test_landmark_promotion.py`.

@@ -4,8 +4,8 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { useMemo, useRef, useState, useEffect } from "react";
 import * as THREE from "three";
 
-const ACCENT = "#a3e635";
-const ACCENT_SOFT = "#bef264";
+const ACCENT = "#ccff00";
+const ACCENT_SOFT = "#ddff66";
 
 // Joint coordinates for a stylized humanoid skeleton (y-up).
 const J = {
@@ -241,8 +241,8 @@ export default function HeroScene() {
       gl={{ antialias: true, alpha: true }}
       dpr={[1, 1.75]}
     >
-      <color attach="background" args={["#0a0a0f"]} />
-      <fog attach="fog" args={["#0a0a0f", 4, 9]} />
+      <color attach="background" args={["#0b0e14"]} />
+      <fog attach="fog" args={["#0b0e14", 4, 9]} />
       <Skeleton mouse={mouse} />
       <Particles />
       <GroundGrid />

@@ -127,7 +127,7 @@ function PreviewObject({
   if (!obj) {
     return (
       <Html center>
-        <div style={{ color: "#6c63ff", fontSize: 14 }}>⚙️ Loading preview…</div>
+        <div style={{ color: "#00f0ff", fontSize: 14 }}>⚙️ Loading preview…</div>
       </Html>
     );
   }
@@ -194,8 +194,8 @@ export function RotationPreview({
 
   const btnStyle: React.CSSProperties = {
     padding: "0.4rem 0.7rem",
-    background: "#12121a",
-    border: "1px solid #2a2a3d",
+    background: "#161b22",
+    border: "1px solid #313b4a",
     borderRadius: 8,
     color: "#ccc",
     fontSize: ".85rem",
@@ -209,8 +209,8 @@ export function RotationPreview({
           height,
           borderRadius: 12,
           overflow: "hidden",
-          background: "linear-gradient(135deg,#0a0a14,#0d0d20)",
-          border: "1px solid #2a2a3d",
+          background: "linear-gradient(135deg,#0b0e14,#161b22)",
+          border: "1px solid #313b4a",
           marginBottom: "0.75rem",
         }}
       >
@@ -228,8 +228,8 @@ export function RotationPreview({
           <Grid
             position={[0, 0, 0]}
             args={[10, 10]}
-            cellColor="#1a1a2e"
-            sectionColor="#2a2a3d"
+            cellColor="#1c2330"
+            sectionColor="#313b4a"
             fadeDistance={12}
             infiniteGrid
           />
@@ -289,7 +289,7 @@ export function RotationPreview({
                 style={{
                   minWidth: 56,
                   textAlign: "right",
-                  color: "#6c63ff",
+                  color: "#00f0ff",
                   fontWeight: 700,
                   fontSize: ".9rem",
                 }}

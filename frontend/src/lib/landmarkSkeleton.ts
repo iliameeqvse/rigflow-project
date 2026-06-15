@@ -25,4 +25,7 @@ export const SKELETON_EDGES: ReadonlyArray<readonly [LandmarkKey, LandmarkKey]> 
   // right leg
   ["right_hip", "right_knee"],
   ["right_knee", "right_ankle"],
+  // heels (back of the foot)
+  ["left_ankle", "left_heel"],
+  ["right_ankle", "right_heel"],
 ];

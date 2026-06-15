@@ -50,8 +50,8 @@ class RiggedModel(models.Model):
     landmarks = models.JSONField(
         null=True, blank=True,
         help_text=(
-            "14 anatomical landmarks (chin, groin, L/R × {shoulder, elbow, "
-            "wrist, hip, knee, ankle}) in three.js editor space, used to fit "
+            "16 anatomical landmarks (chin, groin, L/R × {shoulder, elbow, "
+            "wrist, hip, knee, ankle, heel}) in three.js editor space, used to fit "
             "the rigify metarig to non-human-proportion meshes. Populated by "
             "auto-rig; editable via /landmarks/ + /rerig-landmarks/."
         ),

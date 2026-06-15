@@ -369,7 +369,7 @@ export default function EditorPage() {
                   )}
 
                   {showSkeleton && (
-                    <p className="mb-3 font-mono text-xs text-violet">
+                    <p className="mb-3 font-mono text-xs text-cyan">
                       Cyan lines show the deform bones — rotate the model to inspect coverage.
                     </p>
                   )}
@@ -553,7 +553,7 @@ function Callout({
   const styles =
     tone === "warning"
       ? "border-amber-500/30 bg-amber-500/5 text-amber-200"
-      : "border-violet/30 bg-violet/5 text-violet/95";
+      : "border-cyan/30 bg-cyan/5 text-cyan/95";
   return (
     <div className={`mb-4 rounded-xl border px-4 py-3 text-sm ${styles}`}>
       {children}

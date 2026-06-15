@@ -19,7 +19,7 @@ export function Hero() {
       {/* Aurora gradient background */}
       <div className="pointer-events-none absolute inset-0 -z-10">
         <div className="absolute -top-1/3 -left-1/4 h-[80vh] w-[80vh] rounded-full bg-accent/20 blur-[140px] [animation:var(--animate-aurora-1)]" />
-        <div className="absolute top-1/4 -right-1/4 h-[70vh] w-[70vh] rounded-full bg-violet/25 blur-[140px] [animation:var(--animate-aurora-2)]" />
+        <div className="absolute top-1/4 -right-1/4 h-[70vh] w-[70vh] rounded-full bg-cyan/25 blur-[140px] [animation:var(--animate-aurora-2)]" />
         <div className="absolute bottom-0 left-1/3 h-[60vh] w-[60vh] rounded-full bg-accent/15 blur-[160px] [animation:var(--animate-aurora-3)]" />
       </div>
 
@@ -28,7 +28,7 @@ export function Hero() {
         className="pointer-events-none absolute inset-0 -z-10 opacity-[0.18]"
         style={{
           backgroundImage:
-            "linear-gradient(to right, rgba(163,230,53,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(163,230,53,0.08) 1px, transparent 1px)",
+            "linear-gradient(to right, rgba(204,255,0,0.07) 1px, transparent 1px), linear-gradient(to bottom, rgba(204,255,0,0.07) 1px, transparent 1px)",
           backgroundSize: "64px 64px",
           maskImage:
             "radial-gradient(ellipse at center, black 30%, transparent 75%)",
@@ -39,22 +39,7 @@ export function Hero() {
 
       <div className="relative mx-auto grid max-w-7xl grid-cols-1 items-center gap-10 px-6 lg:grid-cols-[1.1fr_1fr]">
         <div>
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface/60 px-3 py-1.5 backdrop-blur"
-          >
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
-            </span>
-            <span className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
-              v1.0 · auto-rigging pipeline
-            </span>
-          </motion.div>
-
-          <h1 className="mt-7 text-balance text-5xl font-bold leading-[1.05] tracking-[-0.03em] text-foreground sm:text-6xl lg:text-[5.5rem]">
+          <h1 className="text-balance text-5xl font-bold leading-[1.05] tracking-[-0.03em] text-foreground sm:text-6xl lg:text-[5.5rem]">
             {headline.map((word, i) => (
               <motion.span
                 key={i}

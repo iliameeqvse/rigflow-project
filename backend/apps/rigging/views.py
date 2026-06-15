@@ -37,6 +37,7 @@ LANDMARK_KEYS = (
     "left_hip", "right_hip",
     "left_knee", "right_knee",
     "left_ankle", "right_ankle",
+    "left_heel", "right_heel",
 )
 
 
@@ -292,10 +293,10 @@ class RiggedModelViewSet(ModelViewSet):
         return Response(self.get_serializer(rig, context={"request": request}).data)
 
     @extend_schema(
-        summary="Get the 14 detected landmarks for the rig editor",
+        summary="Get the 16 detected landmarks for the rig editor",
         description=(
-            "Returns 14 anatomical landmarks (chin, groin, L/R × shoulder, "
-            "elbow, wrist, hip, knee, ankle) in three.js editor space. "
+            "Returns 16 anatomical landmarks (chin, groin, L/R × shoulder, "
+            "elbow, wrist, hip, knee, ankle, heel) in three.js editor space. "
             "Populated when the rig was generated; if the rig predates the "
             "feature, returns AABB-default landmarks instead of 404."
         ),

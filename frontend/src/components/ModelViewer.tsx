@@ -274,7 +274,7 @@ class ModelErrorBoundary extends React.Component<
         <div style={{
           width: "100%", height: "100%", display: "flex",
           alignItems: "center", justifyContent: "center",
-          background: "#0a0a14", color: "#ff6b6b",
+          background: "#0b0e14", color: "#ff6b6b",
           fontSize: "0.9rem", textAlign: "center", padding: "1.5rem",
         }}>
           Could not render a preview — your rig was still saved successfully.
@@ -309,9 +309,9 @@ export function ModelViewer({
   return (
     <div style={{
       width: "100%", height: `${height}px`,
-      background: "linear-gradient(135deg,#0a0a14,#0d0d20)",
+      background: "linear-gradient(135deg,#0b0e14,#161b22)",
       borderRadius: "12px", overflow: "hidden",
-      border: "1px solid #2a2a3d",
+      border: "1px solid #313b4a",
     }}>
       <ModelErrorBoundary>
         <Canvas
@@ -320,12 +320,12 @@ export function ModelViewer({
         >
           <ambientLight intensity={0.5} />
           <directionalLight position={[5, 10, 5]} intensity={1} castShadow />
-          <pointLight position={[-5, 5, -5]} intensity={0.3} color="#6c63ff" />
+          <pointLight position={[-5, 5, -5]} intensity={0.3} color="#00f0ff" />
           <Environment preset="studio" />
 
           <Suspense fallback={
             <Html center>
-              <div style={{ color: "#6c63ff", fontSize: 14 }}>⚙️ Loading model…</div>
+              <div style={{ color: "#00f0ff", fontSize: 14 }}>⚙️ Loading model…</div>
             </Html>
           }>
             {isFbxOrObj
@@ -336,7 +336,7 @@ export function ModelViewer({
 
           <Grid
             position={[0, 0, 0]} args={[20, 20]}
-            cellColor="#1a1a2e" sectionColor="#2a2a3d"
+            cellColor="#1c2330" sectionColor="#313b4a"
             fadeDistance={15} infiniteGrid
           />
           <OrbitControls

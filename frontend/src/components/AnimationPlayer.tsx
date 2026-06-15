@@ -560,8 +560,8 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
 
   const controlStyle: React.CSSProperties = {
     padding: "0.55rem 0.9rem",
-    background: "#12121a",
-    border: "1px solid #2a2a3d",
+    background: "#161b22",
+    border: "1px solid #313b4a",
     borderRadius: 8,
     color: "#ccc",
     fontSize: ".9rem",
@@ -630,7 +630,7 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
         </p>
       )}
       {statusMsg && !loadingMsg && (
-        <p style={{ color: "#00d4ff", fontSize: ".85rem", marginBottom: ".5rem" }}>
+        <p style={{ color: "#00f0ff", fontSize: ".85rem", marginBottom: ".5rem" }}>
           {statusMsg}
         </p>
       )}
@@ -645,20 +645,20 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
           height,
           borderRadius: 12,
           overflow: "hidden",
-          background: "linear-gradient(135deg,#0a0a14,#0d0d20)",
-          border: "1px solid #2a2a3d",
+          background: "linear-gradient(135deg,#0b0e14,#161b22)",
+          border: "1px solid #313b4a",
         }}
       >
         <Canvas camera={{ position: [0, 1.4, 3.5], fov: 45 }} shadows>
           <ambientLight intensity={0.5} />
           <directionalLight position={[5, 10, 5]} intensity={1} castShadow />
-          <pointLight position={[-5, 5, -5]} intensity={0.3} color="#6c63ff" />
+          <pointLight position={[-5, 5, -5]} intensity={0.3} color="#00f0ff" />
           <Environment preset="studio" />
 
           <Suspense
             fallback={
               <Html center>
-                <div style={{ color: "#6c63ff", fontSize: 14 }}>⚙️ Loading…</div>
+                <div style={{ color: "#00f0ff", fontSize: 14 }}>⚙️ Loading…</div>
               </Html>
             }
           >
@@ -667,7 +667,7 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
 
           <Grid
             position={[0, 0, 0]} args={[20, 20]}
-            cellColor="#1a1a2e" sectionColor="#2a2a3d"
+            cellColor="#1c2330" sectionColor="#313b4a"
             fadeDistance={15} infiniteGrid
           />
           <OrbitControls

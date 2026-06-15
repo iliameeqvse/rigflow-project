@@ -14,7 +14,9 @@
       "left_knee":      [290, 160],
       "right_knee":     [222, 160],
       "left_ankle":     [290,  80],
-      "right_ankle":    [222,  80]
+      "right_ankle":    [222,  80],
+      "left_heel":      [292,  68],
+      "right_heel":     [220,  68]
     },
     "back": {
       "chin":           [256, 490],
@@ -30,7 +32,9 @@
       "left_knee":      [222, 160],
       "right_knee":     [290, 160],
       "left_ankle":     [222,  80],
-      "right_ankle":    [290,  80]
+      "right_ankle":    [290,  80],
+      "left_heel":      [220,  68],
+      "right_heel":     [292,  68]
     },
     "left": {
       "chin":           [256, 490],
@@ -46,7 +50,9 @@
       "left_knee":      [256, 160],
       "right_knee":     null,
       "left_ankle":     [256,  80],
-      "right_ankle":    null
+      "right_ankle":    null,
+      "left_heel":      [228,  68],
+      "right_heel":     null
     },
     "right": {
       "chin":           [256, 490],
@@ -62,7 +68,9 @@
       "left_knee":      null,
       "right_knee":     [256, 160],
       "left_ankle":     null,
-      "right_ankle":    [256,  80]
+      "right_ankle":    [256,  80],
+      "left_heel":      null,
+      "right_heel":     [284,  68]
     }
   },
   "mesh_objects": {

@@ -1,24 +1,26 @@
 @import "tailwindcss";
 
 @theme inline {
-  --color-background: #0a0a0f;
-  --color-surface: #101018;
-  --color-surface-2: #16161f;
-  --color-border: #1f1f2e;
-  --color-border-strong: #2a2a3d;
-  --color-foreground: #fafafa;
-  --color-muted: #71717a;
-  --color-muted-foreground: #a1a1aa;
-  --color-accent: #a3e635;
-  --color-accent-soft: #bef264;
-  --color-accent-glow: rgba(163, 230, 53, 0.35);
-  --color-violet: #8b5cf6;
+  /* Modern Precision — Cyber Lime */
+  --color-background: #0b0e14;       /* Midnight Navy */
+  --color-surface: #161b22;          /* Deep Space */
+  --color-surface-2: #1c2330;        /* Nested UI elements */
+  --color-border: #232b37;
+  --color-border-strong: #313b4a;
+  --color-foreground: #ffffff;       /* Pure White */
+  --color-muted: #5e6877;
+  --color-muted-foreground: #8b949e; /* Muted Blue */
+  --color-accent: #ccff00;           /* Electric Lime */
+  --color-accent-soft: #ddff66;
+  --color-accent-glow: rgba(204, 255, 0, 0.32);
+  --color-cyan: #00f0ff;             /* Cyan Glow — secondary accent */
+  --color-cyan-soft: #66f7ff;
   --color-danger: #ef4444;
 
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
 
-  --shadow-glow-accent: 0 0 60px -10px rgba(163, 230, 53, 0.45);
+  --shadow-glow-accent: 0 0 60px -10px rgba(204, 255, 0, 0.42);
   --shadow-soft: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px rgba(0, 0, 0, 0.5);
 
   --animate-aurora-1: aurora-1 22s ease-in-out infinite;

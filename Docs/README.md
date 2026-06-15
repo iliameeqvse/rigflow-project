@@ -9,7 +9,8 @@ For Claude Code agent instructions and quick repo gotchas, see the top-level `CL
 | If you are… | Read in this order |
 |---|---|
 | New to the project | [PRODUCT_REQUIREMENTS](PRODUCT_REQUIREMENTS.md) → [ARCHITECTURE](ARCHITECTURE.md) → [DEVELOPMENT](DEVELOPMENT.md) |
-| Setting up locally | [DEVELOPMENT](DEVELOPMENT.md) → [KNOWN_ISSUES](KNOWN_ISSUES.md) |
+| Setting up for the first time | [SETUP](SETUP.md) |
+| Setting up locally (existing dev) | [DEVELOPMENT](DEVELOPMENT.md) → [KNOWN_ISSUES](KNOWN_ISSUES.md) |
 | Building against the HTTP API | [API](API.md) → [RIGGING_PIPELINE](RIGGING_PIPELINE.md) |
 | Debugging the rig output | [RIGGING_PIPELINE](RIGGING_PIPELINE.md) → [KNOWN_ISSUES](KNOWN_ISSUES.md) |
 | Planning the next feature | [RIGFLOW_PRD](RIGFLOW_PRD.md) → [ROADMAP](ROADMAP.md) |
@@ -22,15 +23,16 @@ For Claude Code agent instructions and quick repo gotchas, see the top-level `CL
 - [**ROADMAP.md**](ROADMAP.md) — phased plan with concrete checklist items.
 
 ### Engineering
+- [**SETUP.md**](SETUP.md) — complete step-by-step guide for cloning and running the project from scratch.
 - [**ARCHITECTURE.md**](ARCHITECTURE.md) — services, request flow, storage layout, WebSocket channel.
 - [**TECHNICAL_CONTEXT.md**](TECHNICAL_CONTEXT.md) — quick-reference of stack, dependencies, repo layout.
-- [**RIGGING_PIPELINE.md**](RIGGING_PIPELINE.md) — Blender automation deep dive: landmarks, pose detection, rerig flows.
+- [**RIGGING_PIPELINE.md**](RIGGING_PIPELINE.md) — Blender automation deep dive: landmarks, pose detection, rerig flows, AI vision pipeline.
 - [**API.md**](API.md) — REST endpoint reference, throttle table, error shapes.
 - [**DEVELOPMENT.md**](DEVELOPMENT.md) — local setup, env vars, common commands, troubleshooting.
 - [**KNOWN_ISSUES.md**](KNOWN_ISSUES.md) — repo gotchas, code drift, things that look broken but aren't (and things that are).
 
 ## Conventions
 
-- All shell paths in these docs are relative to `rigflow-project/rigflow-project/` (the nested source root — see [KNOWN_ISSUES](KNOWN_ISSUES.md#repo-layout)).
+- All shell paths in these docs are relative to the repo root (`rigflow-project/`).
 - API examples use `http://localhost:8000` (Django dev server). In Docker the same port is served via Daphne behind Nginx.
 - When adding a new doc, link it from this index and from any sibling doc whose readers would benefit. Keep the index entry to one line.

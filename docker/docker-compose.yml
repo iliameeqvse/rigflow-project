@@ -107,6 +107,8 @@ services:
       celery -A rigflow beat
         --loglevel=info
         --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    env_file:
+      - ../backend/.env
     environment:
       DJANGO_SETTINGS_MODULE: rigflow.settings.production
       DATABASE_URL: postgres://rigflow:${DB_PASSWORD:-rigflow123}@db:5432/rigflow

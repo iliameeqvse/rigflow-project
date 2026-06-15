@@ -14,6 +14,7 @@ Pipeline:
 """
 
 import argparse
+import heapq
 import json
 import math
 import sys
@@ -28,6 +29,22 @@ from mathutils import Matrix
 # and the landmark picker captures clicks in that space. We reuse the ratio
 # when converting landmark positions back into Blender world coords.
 THREE_DISPLAY_HEIGHT = 2.0
+
+# DEF-hand bone length as a fraction of the forearm (elbow→wrist) length.
+# Replaces a fixed 7 cm guess that scaled wrong on any non-default model size.
+HAND_TO_FOREARM_RATIO = 0.45
+
+# Orphan-weight blend: each unreachable vertex is assigned to its K nearest
+# deform bones with weight ∝ 1 / dist**P (normalized), instead of dumping full
+# weight on the single nearest bone. The soft falloff removes the rigid
+# faceting the old nearest-bone=1 fallback produced across multi-bone regions.
+ORPHAN_BLEND_K = 4
+ORPHAN_BLEND_POWER = 2.0
+
+# "For now" simplification: collapse each hand to a single rigid DEF-hand bone
+# by folding all finger/palm DEF-bone weights into DEF-hand and deleting the
+# finger bones after binding. Set False to restore per-finger articulation.
+COLLAPSE_HANDS_TO_SINGLE_BONE = True
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +726,7 @@ LANDMARK_KEYS = (
     "left_hip", "right_hip",
     "left_knee", "right_knee",
     "left_ankle", "right_ankle",
+    "left_heel", "right_heel",
 )
 
 LEGACY_LANDMARK_KEYS = (
@@ -719,9 +737,9 @@ LEGACY_LANDMARK_KEYS = (
 
 
 def _promote_legacy_landmarks(d):
-    """Given a dict containing at least the legacy 6 keys, return a 14-key
-    dict with shoulders/elbows/hips/knees filled in via the heuristics that
-    were inline in the original place_bones_from_landmarks.
+    """Given a dict containing at least the legacy 6 keys, return a 16-key
+    dict with shoulders/elbows/hips/knees/heels filled in via the heuristics
+    that were inline in the original place_bones_from_landmarks.
 
     Inputs may be either mathutils.Vector or any 3-tuple; the math below
     works on either as long as +, -, * are supported (the standalone test
@@ -760,6 +778,17 @@ def _promote_legacy_landmarks(d):
                 ankle.x * 0.97,
                 ankle.y - 0.04,
                 (groin.z + ankle.z) / 2 + 0.02,
+            ))
+        # Heel: behind the ankle (the foot points toe-forward at -Y, so the
+        # heel sits at +Y) and on the floor (ankle.z). A few % of torso
+        # height back is a sane humanoid default; the editor lets the user
+        # drag it onto the real heel.
+        heel_key = f"{side}_heel"
+        if heel_key not in out:
+            out[heel_key] = _vec((
+                ankle.x,
+                ankle.y + body_h * 0.05,
+                ankle.z,
             ))
     return out
 
@@ -1073,6 +1102,15 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
         if b:
             pre_move[name] = b.head.copy()
 
+    # Hands additionally need their full pre-move frame (head, tail, length)
+    # so the finger chain can be re-fitted with the same rotation + scale the
+    # hand bone underwent — not just translated. See the re-fit block below.
+    hand_pre = {}
+    for side in ("L", "R"):
+        b = eb.get(f"hand.{side}")
+        if b:
+            hand_pre[side] = (b.head.copy(), b.tail.copy(), b.length)
+
     # Track every bone we manually move so we can restrict the post-step
     # roll recalculation to those. Untouched bones (fingers, face, breast,
     # etc.) keep Rigify's hand-tuned default rolls — recalculating them to
@@ -1095,7 +1133,13 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
         ("L", ls, le, lw),
         ("R", rs, re, rw),
     ):
-        hand_end = wrist + (wrist - elbow).normalized() * 0.07
+        # DEF-hand length scales with the forearm so the palm bone (and the
+        # finger chain re-fitted onto it below) match the model's size —
+        # the old fixed 0.07 m made hands tiny on large models and huge on
+        # small ones.
+        forearm_len = (wrist - elbow).length
+        hand_len = max(forearm_len * HAND_TO_FOREARM_RATIO, 0.02)
+        hand_end = wrist + (wrist - elbow).normalized() * hand_len
         for name, h, t in (
             (f"upper_arm.{side}", shoulder, elbow),
             (f"forearm.{side}",   elbow,    wrist),
@@ -1122,12 +1166,59 @@ def place_bones_from_landmarks(metarig, landmarks, mesh_height):
                 b.head, b.tail = h, t
                 placed.add(name)
 
-    # Shift every descendant of the moved hand / foot / toe bones by the
-    # same delta their parent moved. Without this finger and toe segments
-    # stay at metarig-default coords (the "hands off" / floating fingers
-    # symptom). Translation only — preserves each descendant's relative
-    # length and roll, so Rigify still generates sensible bones.
+    # Re-fit the finger chains onto the placed hands with the FULL rigid
+    # transform (rotation + length scale + translation) that maps the
+    # metarig hand onto the new hand, applied via EditBone.transform so
+    # head, tail AND roll all follow. Translation alone (the old behaviour)
+    # left fingers pointing in the metarig's default direction — twisted
+    # relative to the re-aimed hand — and at metarig scale, wrong-sized on
+    # any non-default model. Those mis-oriented finger bones then produced
+    # bad ARMATURE_AUTO weights, so the hands also deformed badly when
+    # animated. Wrapped so a transform failure degrades to translation-only
+    # rather than killing the subprocess.
+    for side, (old_head, old_tail, old_len) in hand_pre.items():
+        hand = eb.get(f"hand.{side}")
+        if not hand:
+            continue
+        descendants = []
+        stack = list(hand.children)
+        while stack:
+            child = stack.pop()
+            descendants.append(child)
+            stack.extend(child.children)
+        if not descendants:
+            continue
+        new_head, new_len = hand.head.copy(), hand.length
+        try:
+            old_dir = (old_tail - old_head).normalized()
+            new_dir = (hand.tail - hand.head).normalized()
+            R = old_dir.rotation_difference(new_dir).to_matrix().to_4x4()
+            s = (new_len / old_len) if old_len > 1e-6 else 1.0
+            # Map a point: translate hand head to origin, scale, rotate,
+            # translate to the new hand head. EditBone.transform rotates the
+            # bone roll and scales the bone length to match.
+            T4 = (Matrix.Translation(new_head)
+                  @ R
+                  @ Matrix.Scale(s, 4)
+                  @ Matrix.Translation(-old_head))
+            for child in descendants:
+                child.transform(T4)
+            log(f"Re-fit {len(descendants)} bones under hand.{side} "
+                f"(rot + scale {s:.2f})")
+        except Exception as e:
+            delta = new_head - old_head
+            for child in descendants:
+                child.head = child.head + delta
+                child.tail = child.tail + delta
+            log(f"hand.{side} full re-fit failed ({e}); translated "
+                f"{len(descendants)} finger bones by {delta.length:.3f}m instead")
+
+    # Feet / toes: descendants follow by translation only — the metarig foot
+    # already points close enough to the placed foot that rotation isn't
+    # worth the risk. Hands are excluded here (handled by the block above).
     for name, old_head in pre_move.items():
+        if name in ("hand.L", "hand.R"):
+            continue
         b = eb.get(name)
         if not b:
             continue
@@ -1285,23 +1376,46 @@ def bind_auto_weights(meshes, rig):
     log(f"Bound {len(meshes)} mesh(es) with ARMATURE_AUTO")
 
 
+def _closest_dist_sq_to_segment(p, a, b):
+    """Squared distance from point p to the *segment* a→b (clamped to the
+    endpoints — not the infinite line). Distance-to-segment beats
+    distance-to-midpoint for long bones: a vertex next to the elbow end of
+    the forearm should weight to the forearm, not lose to a shorter bone
+    whose midpoint happens to sit closer."""
+    ab = b - a
+    ab_len_sq = ab.length_squared
+    if ab_len_sq < 1e-12:
+        return (p - a).length_squared
+    t = (p - a).dot(ab) / ab_len_sq
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+    return (p - (a + ab * t)).length_squared
+
+
 def patch_orphan_vertex_weights(meshes, rig):
     """Heat-diffusion ARMATURE_AUTO fails for bones it can't reach inside
     the mesh volume — they get no vertex weights, and the corresponding
-    mesh regions render at origin in three.js (the "two dots moving"
-    bug). For every vertex with sum-of-weights ≈ 0, fall back to assigning
-    full weight to the nearest deform bone's midpoint. Slow but bounded
-    (O(V × B), ~50k×30 ≈ 1.5M ops, runs in a couple of seconds)."""
-    bone_targets = []
+    mesh regions render at origin in three.js (the "two dots moving" bug).
+
+    For every vertex with sum-of-weights ≈ 0, blend it across its
+    ORPHAN_BLEND_K nearest deform bones with weight ∝ 1 / dist**P
+    (normalized to sum 1), distance measured to the bone *segment*. This
+    replaces the old "full weight to the single nearest bone" fallback,
+    whose hard 0/1 boundary produced rigid faceting wherever an orphan
+    region spanned more than one bone (knuckles, elbows, armpits). Bounded
+    O(V × B) — only orphan verts pay the per-bone scan."""
+    bone_segments = []
     for b in rig.data.bones:
         if not b.use_deform:
             continue
         head = rig.matrix_world @ b.head_local
         tail = rig.matrix_world @ b.tail_local
-        bone_targets.append((b.name, (head + tail) / 2))
-    if not bone_targets:
+        bone_segments.append((b.name, head, tail))
+    if not bone_segments:
         return
-    deform_names = {name for name, _ in bone_targets}
+    deform_names = {name for name, _, _ in bone_segments}
 
     patched_total = 0
     for mesh_obj in meshes:
@@ -1325,14 +1439,103 @@ def patch_orphan_vertex_weights(meshes, rig):
             if total > 1e-4:
                 continue
             world_pos = mesh_obj.matrix_world @ v.co
-            nearest = min(bone_targets,
-                          key=lambda bt: (bt[1] - world_pos).length_squared)
-            vg_for(nearest[0]).add([v.index], 1.0, "REPLACE")
+            # K nearest deform bones, by distance to the bone segment.
+            nearest = heapq.nsmallest(
+                ORPHAN_BLEND_K,
+                ((_closest_dist_sq_to_segment(world_pos, h, t), name)
+                 for name, h, t in bone_segments),
+                key=lambda item: item[0],
+            )
+            # Inverse-distance-power blend, normalized so the influences sum
+            # to 1 (glTF keeps the top 4 and renormalizes on its own).
+            blended = [
+                (name, 1.0 / (math.sqrt(dsq) ** ORPHAN_BLEND_POWER + 1e-6))
+                for dsq, name in nearest
+            ]
+            norm = sum(w for _, w in blended) or 1.0
+            for name, w in blended:
+                vg_for(name).add([v.index], w / norm, "REPLACE")
             patched_here += 1
         patched_total += patched_here
         if patched_here:
-            log(f"  Patched {patched_here} orphan verts in {mesh_obj.name}")
-    log(f"Skinning fallback: patched {patched_total} orphan vertices total")
+            log(f"  Blended {patched_here} orphan verts in {mesh_obj.name}")
+    log(f"Skinning fallback: blended {patched_total} orphan vertices "
+        f"over {ORPHAN_BLEND_K} nearest bones")
+
+
+# Stems (after the "DEF-" prefix) of Rigify's human finger/palm deform bones.
+# These are the only DEF bones using these stems, so prefix-matching is safe.
+_FINGER_DEF_STEMS = ("thumb", "f_index", "f_middle", "f_ring", "f_pinky", "palm")
+
+
+def _is_finger_def_bone(name):
+    if not name.startswith("DEF-"):
+        return False
+    stem = name[4:]
+    return any(stem.startswith(s) for s in _FINGER_DEF_STEMS)
+
+
+def collapse_finger_bones(rig, meshes):
+    """Fold every finger / palm DEF bone's skin weights into DEF-hand.{L,R}
+    and delete those bones, so each hand exports as ONE rigid bone.
+
+    Binding still happens with the full finger chain present, so the hand
+    region gets smooth heat-diffused weights; here we just *sum* the finger
+    weights onto the single hand bone (per side) and remove the finger
+    groups + bones. Per-vertex weight totals are preserved (finger weight is
+    moved, not duplicated). Gated by COLLAPSE_HANDS_TO_SINGLE_BONE."""
+    finger_names = [b.name for b in rig.data.bones if _is_finger_def_bone(b.name)]
+    if not finger_names:
+        log("collapse_finger_bones: no finger DEF bones found")
+        return
+
+    def hand_target(fname):
+        if fname.endswith(".L"):
+            return "DEF-hand.L"
+        if fname.endswith(".R"):
+            return "DEF-hand.R"
+        return None
+
+    for m in meshes:
+        vgs = {vg.name: vg for vg in m.vertex_groups}
+        # Make sure both hand groups exist to receive the merged weight.
+        for side in ("L", "R"):
+            hn = f"DEF-hand.{side}"
+            if hn not in vgs:
+                vgs[hn] = m.vertex_groups.new(name=hn)
+
+        finger_group_indices = {vgs[n].index for n in finger_names if n in vgs}
+        if not finger_group_indices:
+            continue
+
+        for v in m.data.vertices:
+            extra = {"DEF-hand.L": 0.0, "DEF-hand.R": 0.0}
+            for g in v.groups:
+                if g.group in finger_group_indices:
+                    tgt = hand_target(m.vertex_groups[g.group].name)
+                    if tgt:
+                        extra[tgt] += g.weight
+            for hn, w in extra.items():
+                if w > 0.0:
+                    vgs[hn].add([v.index], w, "ADD")
+
+        for n in finger_names:
+            vg = m.vertex_groups.get(n)
+            if vg:
+                m.vertex_groups.remove(vg)
+
+    activate(rig)
+    bpy.ops.object.mode_set(mode="EDIT")
+    ebs = rig.data.edit_bones
+    removed = 0
+    for n in finger_names:
+        b = ebs.get(n)
+        if b:
+            ebs.remove(b)
+            removed += 1
+    bpy.ops.object.mode_set(mode="OBJECT")
+    log(f"Collapsed hands to single bone: merged {len(finger_names)} finger "
+        f"bones into DEF-hand, removed {removed} edit bones")
 
 
 def export_glb(meshes, rig, path):
@@ -1869,6 +2072,7 @@ def normalize_bilateral_landmark_sides(landmarks):
         ("left_hip", "right_hip", "hip"),
         ("left_knee", "right_knee", "knee"),
         ("left_ankle", "right_ankle", "ankle"),
+        ("left_heel", "right_heel", "heel"),
     ):
         left = normalized.get(left_key)
         right = normalized.get(right_key)
@@ -2096,6 +2300,14 @@ def main():
         log(f"Skinning fallback failed (non-fatal): {e}")
         import traceback
         log(traceback.format_exc())
+
+    if COLLAPSE_HANDS_TO_SINGLE_BONE:
+        try:
+            collapse_finger_bones(rig, meshes)
+        except Exception as e:
+            log(f"Hand collapse failed (non-fatal): {e}")
+            import traceback
+            log(traceback.format_exc())
 
     strip_to_deform_bones(rig)
     remove_rigify_widget_objects()

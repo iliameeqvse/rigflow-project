@@ -26,7 +26,7 @@ export function FinalCTA() {
         className="pointer-events-none absolute left-1/2 top-1/2 h-[800px] w-[800px] -translate-x-1/2 -translate-y-1/2 opacity-30"
         style={{
           background:
-            "conic-gradient(from 0deg, transparent 0deg, rgba(163,230,53,0.4) 90deg, transparent 180deg, rgba(139,92,246,0.3) 270deg, transparent 360deg)",
+            "conic-gradient(from 0deg, transparent 0deg, rgba(204,255,0,0.4) 90deg, transparent 180deg, rgba(0,240,255,0.3) 270deg, transparent 360deg)",
           maskImage: "radial-gradient(circle, transparent 50%, black 51%, transparent 70%)",
           WebkitMaskImage: "radial-gradient(circle, transparent 50%, black 51%, transparent 70%)",
         }}

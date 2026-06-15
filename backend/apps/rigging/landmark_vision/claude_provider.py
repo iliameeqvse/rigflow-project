@@ -14,7 +14,7 @@ from .prompts import VISION_PROMPT_TEMPLATE
 log = logging.getLogger(__name__)
 
 MODEL_ID = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 2000
+MAX_TOKENS = 2500
 MAX_RETRIES = 1  # one retry on malformed JSON; then return None
 
 

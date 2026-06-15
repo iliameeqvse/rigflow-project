@@ -34,7 +34,7 @@ export function FloatingCTA() {
         >
           <Link
             href={href}
-            className="group relative flex items-center gap-2 overflow-hidden rounded-full bg-accent px-5 py-3 text-sm font-semibold text-background shadow-[0_8px_30px_-4px_rgba(163,230,53,0.55)] transition-transform hover:scale-[1.03] active:scale-[0.98]"
+            className="group relative flex items-center gap-2 overflow-hidden rounded-full bg-accent px-5 py-3 text-sm font-semibold text-background shadow-[0_8px_30px_-4px_rgba(204,255,0,0.5)] transition-transform hover:scale-[1.03] active:scale-[0.98]"
           >
             {/* Pulsing glow halo */}
             <span className="pointer-events-none absolute inset-0 -z-10 rounded-full bg-accent blur-xl opacity-50 animate-pulse" />

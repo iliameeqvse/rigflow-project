@@ -1,4 +1,4 @@
-"""Default 14-key landmarks for rigs that pre-date the auto-detection
+"""Default 16-key landmarks for rigs that pre-date the auto-detection
 feature. Computed from a unit-height humanoid silhouette so the editor
 has draggable starting points instead of all-zero coordinates.
 """
@@ -19,6 +19,9 @@ DEFAULT_LANDMARKS_UNIT_HEIGHT = {
     "right_knee":     [-0.10, 0.50,  0.00],
     "left_ankle":     [ 0.10, 0.00,  0.00],
     "right_ankle":    [-0.10, 0.00,  0.00],
+    # Heel: behind the ankle (-Z is backward in editor space) at floor level.
+    "left_heel":      [ 0.10, 0.00, -0.10],
+    "right_heel":     [-0.10, 0.00, -0.10],
 }
 
 

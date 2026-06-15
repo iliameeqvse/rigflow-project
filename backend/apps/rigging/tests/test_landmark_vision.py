@@ -161,7 +161,7 @@ class VisionPromptTests(SimpleTestCase):
         # placeholder and the scene context disappears silently.
         self.assertIn("{mesh_object_names}", self._prompt())
 
-    def test_keeps_all_14_landmark_keys(self):
+    def test_keeps_all_16_landmark_keys(self):
         prompt = self._prompt()
         for key in (
             "chin", "groin",
@@ -171,6 +171,7 @@ class VisionPromptTests(SimpleTestCase):
             "left_hip",      "right_hip",
             "left_knee",     "right_knee",
             "left_ankle",    "right_ankle",
+            "left_heel",     "right_heel",
         ):
             self.assertIn(key, prompt, f"Prompt missing landmark key: {key}")
 

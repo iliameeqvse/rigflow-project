@@ -35,6 +35,8 @@ def _landmarks():
         "right_knee": [-0.1, 0.5, 0.0],
         "left_ankle": [0.1, 0.0, 0.0],
         "right_ankle": [-0.1, 0.0, 0.0],
+        "left_heel": [0.1, 0.0, -0.1],
+        "right_heel": [-0.1, 0.0, -0.1],
     }
 
 

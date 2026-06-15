@@ -2,29 +2,23 @@
 
 Things that look broken but aren't, things that *are*, and history that explains otherwise-puzzling behaviour. Skim this before debugging anything load-bearing.
 
-## Repo layout
+## ~~Nested repo layout~~ (resolved on current machine)
 
-> **Two `.git` directories exist; only the inner one works.**
+Earlier the project lived inside a doubly-nested `rigflow-project/rigflow-project/` folder with a corrupted outer `.git`. **On the current machine this is resolved** — the source root is simply `rigflow-project/` (alongside `backend/`, `frontend/`, `docker/`, and `Docs/`). All paths in these docs are relative to that root.
 
-The git root **for normal use** is `rigflow-project/rigflow-project/` — the inner folder, alongside `backend/`, `frontend/`, `docker/`, and `Docs/`. Currently on branch `Feature/test`.
-
-There is also a `.git` at the outer `rigflow-project/` level, leftover from the original clone. It is **corrupted** — broken packfile, unreachable HEAD pointing at `21fc31a78…`, dozens of `tmp_pack_*` files in `.git/objects/pack/`. Any `git` command run from the outer folder hits this corrupted repo and prints "packfile does not match index" / "bad object HEAD". Do not try to recover it in place; if you need its history, do a fresh clone of the GitHub remote into a sibling folder.
-
-**Always `cd rigflow-project/rigflow-project/` first** before running any of the commands in [DEVELOPMENT](DEVELOPMENT.md). All paths in these docs assume that working directory.
+If you are on an older checkout that still has the nested structure, `cd rigflow-project/` once inside the outer folder before running any commands.
 
 ## ~~`requirements.txt` at the repo root is an SSH private key~~ (removed)
 
-Historical: a PEM-formatted SSH private key was committed at `rigflow-project/rigflow-project/requirements.txt` (with its public half at `requirements.txt.pub`). Both files have been removed from the working tree. The real Python deps were always at `backend/requirements.txt` and still are.
-
-**If you have an existing checkout from before the removal**, the leaked key should be considered compromised and rotated wherever it was authorised — pruning a file from the working tree does not remove it from git history.
+Historical: a PEM-formatted SSH private key was committed at the repo root as `requirements.txt`. It has been removed. The real Python deps are at `backend/requirements.txt` and always were.
 
 ## ~~`apps/throttles.py` is duplicated~~ (deduplicated)
 
-Historical: the entire module was appended to itself, so every throttle class was defined twice. Python kept the second copy. The file has been deduplicated — there is now exactly one definition of each class. If you see duplication reappear after a rebase, fix the rebase rather than living with it.
+Historical: the entire module was appended to itself, so every throttle class was defined twice. The file has been deduplicated — there is now exactly one definition of each class.
 
 ## Blender failures mark the row `failed` (no more silent passthrough)
 
-Earlier behaviour: if `BLENDER_EXECUTABLE` (env: `BLENDER_PATH`) wasn't a real binary, or if Blender errored, `tasks._run_rig_pipeline` silently copied the input as the "rigged" output and marked the row `done`. That hid real failures behind a green checkmark.
+Earlier behaviour: if `BLENDER_EXECUTABLE` wasn't a real binary, or if Blender errored, `tasks._run_rig_pipeline` silently copied the input as the "rigged" output and marked the row `done`. That hid real failures behind a green checkmark.
 
 Current behaviour: any of these conditions sets `status=failed` and writes a specific `error_message`:
 
@@ -36,7 +30,7 @@ Current behaviour: any of these conditions sets `status=failed` and writes a spe
 | Subprocess > 10 minutes | `"Blender timed out after 10 minutes."` |
 | Subprocess raised | `"Blender subprocess raised: <repr>"` |
 
-The previous `rigged_glb` is left in place on failure (the rerig endpoints already preserve it), so a failed rerig still serves the prior good GLB. **Pre-fix rigs may still be on disk as renamed FBX/OBJ files** — those will surface as JSON parse errors in any GLB-only loader. Re-rig them once Blender is installed to get a real GLB.
+The previous `rigged_glb` is left in place on failure, so a failed rerig still serves the prior good GLB. **Pre-fix rigs may still be on disk as renamed FBX/OBJ files** — those will surface as JSON parse errors in any GLB-only loader. Re-rig them once Blender is installed to get a real GLB.
 
 See [RIGGING_PIPELINE § Behaviour when Blender is missing or fails](RIGGING_PIPELINE.md#behaviour-when-blender-is-missing-or-fails).
 
@@ -62,21 +56,24 @@ Symptom if you ever set `NEXT_PUBLIC_WS_URL` without first wiring up Channels: e
 
 > **Action item**: add `apps/rigging/consumers.py`, wrap `rigflow.asgi.application` in a `ProtocolTypeRouter`, and only then re-set `NEXT_PUBLIC_WS_URL`. See [ARCHITECTURE § Real-time updates](ARCHITECTURE.md#real-time-updates).
 
-## Landmark schema is now 14 keys, not 6
+## Landmark schema is **16 keys** (heels added)
 
-Earlier code accepted a 6-key landmark dict (`chin`, `groin`, `left_wrist`, `right_wrist`, `left_ankle`, `right_ankle`). The current pipeline works in **14 keys** — the same 6 plus `left_shoulder` / `right_shoulder` / `left_elbow` / `right_elbow` / `left_hip` / `right_hip` / `left_knee` / `right_knee`. The full list is in `LANDMARK_KEYS` in both `backend/scripts/blender_autorig.py` and `backend/apps/rigging/views.py`.
+The public API and internal schema use **16 anatomical landmark keys**: `chin`, `groin`, and L/R × `{shoulder, elbow, wrist, hip, knee, ankle, heel}`. The full list is in `LANDMARK_KEYS` in `backend/apps/rigging/views.py`, `backend/scripts/blender_autorig.py`, and `frontend/src/lib/api.ts`.
+
+Heels were the last keys added. They are present in the schema, editor, and auto-detect, but `place_bones_from_landmarks` does **not yet read them** — heel landmarks are stored and editable but don't yet move foot/shin bone placement. Wiring heel → deform bone is the pending next step.
 
 Implications:
 
-- `POST /rigs/{id}/rerig-landmarks/` requires all 14 keys; missing any is a `400`.
-- `RiggedModel.landmarks` (JSON field, added in migration `0003_riggedmodel_landmarks`) holds the 14-key dict in **three.js editor frame** coords (Y-up; mesh normalized to ~2 units tall).
-- `_promote_legacy_landmarks` in the autorig script still upgrades a 6-key dict to 14 internally (used by the auto-detect seed and by the standalone test in `backend/scripts/_test_landmark_promotion.py`), so old code that only knows about the 6 keys can still be adapted server-side — but the public API is 14-only.
+- `POST /rigs/{id}/rerig-landmarks/` requires all 16 keys; missing any is a `400`.
+- `RiggedModel.landmarks` holds the 16-key dict in three.js editor frame (Y-up; model ~2 units tall).
+- `_promote_legacy_landmarks` in the autorig script upgrades a 6-key seed to 16 internally for legacy compatibility, but the public API is 16-only.
+- The `sanity.py` module intentionally uses only 14 keys (subset check, heels excluded) as an internal quality gate — this is by design.
 
-If you ever see the script being called with `detect_landmarks(meshes, pose=...)` *without* `reference_height=...`, that's a regression — bones will be scaled against the live mesh AABB (which props inflate) instead of the metarig height, producing skeletons that visibly extend past the model's hands / feet / head. Both call sites in `main()` must pass `reference_height=mesh_h` where `mesh_h = armature_aabb(metarig)["size"].z`.
+## AI vision pipeline sanity-check cascade
 
-## CLAUDE.md drift
+The two-phase pipeline (ortho render → Claude vision → geometry sanity check → geometry fallback → AABB defaults) means a rig can succeed with `detection_method = "geometry"` or `"failed"` even when Claude vision was invoked. "failed" means AI landmarks failed sanity AND the geometry fallback also failed — AABB defaults are used so the rig finishes as `done`, never hard-fails.
 
-The top-level `CLAUDE.md` is intentionally terse and tries to track the source. If you spot a place where it disagrees with the actual code (or with this doc), fix `CLAUDE.md` — but treat the source as authoritative when in doubt.
+If you see `detection_method = "llm_vision"` in the admin but the rig bones look off, the sanity check passed but the AI was wrong. Use `/rerig-landmarks/` from the editor.
 
 ## Public, unthrottled `/rigs/{id}/status/`
 
@@ -103,12 +100,6 @@ Set in `settings/base.py`. Fine for development, **must be tightened before prod
 
 > **Action item**: enforce in `RiggedModelViewSet.create` and `AnimationListOrUploadView.post`. Filed in [ROADMAP § Phase 2](ROADMAP.md).
 
-## No real test suite
-
-`apps/*/tests.py` are 3-line placeholders. No CI. No coverage tracking. New code is tested manually.
-
-> **Action item**: add a baseline test suite for upload validation, throttle behaviour, and the rerig-preserves-old-GLB invariant. Filed in [ROADMAP § Phase 1](ROADMAP.md).
-
 ## Stripe / payments are stubs
 
 `apps.payments` is empty. `UserProfile.stripe_customer_id` exists but is never written. `PLAN_CHOICES` ("free / pro / studio") have prices in their labels but there's no checkout flow. Treat plans as cosmetic until [ROADMAP § Phase 3](ROADMAP.md).
@@ -117,7 +108,7 @@ Set in `settings/base.py`. Fine for development, **must be tightened before prod
 
 | Path | What it is |
 |---|---|
-| `gaxsenidamerewashale` (repo root) | Empty file, ka name (Georgian transliteration). Harmless cruft. |
-| `package-lock.json` (repo root) | Tiny stub — actual frontend lockfile is at `frontend/package-lock.json`. |
-| `backend/db.sqlite3` | Local dev DB. Checked in for a smooth first-run experience; **wipe before any serious work**. |
-| `media/` (one level above `backend/`) | `MEDIA_ROOT`. User uploads land here. Not checked in. |
+| `backend/staticfiles/` | `collectstatic` output — gitignored, rebuilt on container startup. Not committed. |
+| `backend/media/` | User uploads and rigged GLBs — gitignored, served from a Docker named volume. Not committed. |
+| `backend/db.sqlite3` | Local dev DB — gitignored. Created on first `migrate`. |
+| `frontend/package-lock.json` | The real lockfile. Root-level one (if present) is a stub from an earlier layout — ignore it. |

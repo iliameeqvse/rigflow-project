@@ -34,7 +34,7 @@ export default function SignupPage() {
     <div className="relative isolate min-h-[100svh] overflow-hidden pt-32 pb-16">
       <div className="pointer-events-none absolute inset-0 -z-10">
         <div className="absolute -top-1/3 right-1/4 h-[60vh] w-[60vh] rounded-full bg-accent/15 blur-[140px] [animation:var(--animate-aurora-2)]" />
-        <div className="absolute bottom-0 left-1/4 h-[55vh] w-[55vh] rounded-full bg-violet/20 blur-[140px] [animation:var(--animate-aurora-1)]" />
+        <div className="absolute bottom-0 left-1/4 h-[55vh] w-[55vh] rounded-full bg-cyan/20 blur-[140px] [animation:var(--animate-aurora-1)]" />
       </div>
 
       <motion.div
