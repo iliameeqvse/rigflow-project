@@ -86,8 +86,12 @@ services:
       DATABASE_URL: postgres://rigflow:${DB_PASSWORD:-rigflow123}@db:5432/rigflow
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key-123}
-      # BLENDER_PATH is set by Dockerfile.celery (Blender 5.0.1 tarball at
-      # /usr/local/bin/blender). Don't override here.
+      # Pin the in-container Blender explicitly. The `env_file: ../backend/.env`
+      # above can carry a native Windows BLENDER_PATH (for non-Docker dev) that
+      # would otherwise leak into this Linux container and override the
+      # Dockerfile.celery ENV. `environment:` takes precedence over `env_file:`,
+      # so this keeps the worker on its bundled Blender 5.0.1 tarball.
+      BLENDER_PATH: /usr/local/bin/blender
     volumes:
       - ../backend:/app
       - media_vol:/media
