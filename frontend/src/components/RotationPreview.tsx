@@ -2,7 +2,7 @@
 
 import { useEffect, useState, Suspense } from "react";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Environment, Grid, Html } from "@react-three/drei";
+import { OrbitControls, Grid, Html } from "@react-three/drei";
 import { FBXLoader, GLTFLoader } from "three-stdlib";
 import * as THREE from "three";
 import type { ModelRotation, ModelRotationQuaternion } from "@/lib/api";
@@ -41,6 +41,39 @@ interface Props {
     rotationQuaternion: ModelRotationQuaternion,
   ) => void;
   height?: number;
+}
+
+// The orientation preview only needs the model's SHAPE — not its textures or
+// materials. Real uploads carry 20+ materials and tens of MB of textures; on
+// Windows/ANGLE each material compiles to a separate HLSL program on the main
+// thread and every texture is GPU-uploaded, which blocks the tab long enough
+// to trip Chrome's "Page Unresponsive". Replacing every mesh material with one
+// shared flat material collapses N shader compiles to 1 and skips all texture
+// uploads. We dispose the originals so they're never sent to the GPU.
+const PREVIEW_MATERIAL = new THREE.MeshStandardMaterial({
+  color: 0xb4b8c4,
+  roughness: 0.85,
+  metalness: 0.0,
+});
+
+function stripToShapePreview(obj: THREE.Object3D) {
+  obj.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const current = mesh.material;
+    const mats = Array.isArray(current) ? current : [current];
+    for (const m of mats) {
+      if (!m) continue;
+      // Dispose any textures the material referenced so they never upload.
+      for (const value of Object.values(m)) {
+        if (value && (value as THREE.Texture).isTexture) {
+          (value as THREE.Texture).dispose();
+        }
+      }
+      m.dispose();
+    }
+    mesh.material = PREVIEW_MATERIAL;
+  });
 }
 
 function autoFit(obj: THREE.Object3D) {
@@ -100,6 +133,7 @@ function PreviewObject({
           loaded.applyQuaternion(autoQuat);
         }
         autoFit(loaded);
+        stripToShapePreview(loaded);
         setObj(loaded);
       })
       .catch((e) => {
@@ -215,9 +249,9 @@ export function RotationPreview({
         }}
       >
         <Canvas camera={{ position: [0, 1.3, 3.4], fov: 45 }}>
-          <ambientLight intensity={0.55} />
-          <directionalLight position={[5, 10, 5]} intensity={1} />
-          <Environment preset="studio" />
+          <ambientLight intensity={0.7} />
+          <directionalLight position={[5, 10, 5]} intensity={1.1} />
+          <directionalLight position={[-5, 4, -3]} intensity={0.4} />
           <Suspense fallback={null}>
             <PreviewObject
               key={`${file.name}:${file.size}:${file.lastModified}`}

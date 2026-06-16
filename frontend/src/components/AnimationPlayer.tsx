@@ -121,14 +121,21 @@ function findSkinnedMesh(obj: THREE.Object3D): THREE.SkinnedMesh | null {
   return result;
 }
 
-function buildSourceToTargetNames(
+// SkeletonUtils.retargetClip iterates the TARGET skeleton and resolves each
+// target bone to a source bone via `options.names[targetName] -> sourceName`
+// (see node_modules/three-stdlib SkeletonUtils: getBoneByName(name, source)).
+// So the map MUST be keyed by target bone name with the source name as value —
+// the opposite of what you'd intuitively build. Keying it source->target (the
+// old bug) made every lookup miss and produced a 0-track clip.
+function buildTargetToSourceNames(
   sourceMesh: THREE.SkinnedMesh,
   mixamoToDef: Record<string, string>,
 ): Record<string, string> {
   const map: Record<string, string> = {};
   for (const bone of sourceMesh.skeleton.bones) {
     const t = resolveTargetBone(bone.name, mixamoToDef);
-    if (t) map[bone.name] = sanitizeBoneName(t);
+    // Target node names are sanitized on GLTF load, so the key must be too.
+    if (t) map[sanitizeBoneName(t)] = bone.name;
   }
   return map;
 }
@@ -289,9 +296,9 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
         source.root.updateMatrixWorld(true);
         rig.updateMatrixWorld(true);
 
-        const names = buildSourceToTargetNames(sourceMesh, boneMapping);
+        const names = buildTargetToSourceNames(sourceMesh, boneMapping);
         console.log(
-          `[AnimationPlayer] Retargeting via SkeletonUtils with ${Object.keys(names).length} bone-name pairs`,
+          `[AnimationPlayer] Retargeting via SkeletonUtils with ${Object.keys(names).length} target→source pairs`,
         );
 
         try {
@@ -305,17 +312,31 @@ export function AnimationPlayer({ rigGlbUrl, boneMapping, height = 540 }: Props)
             source.clip,
             { names, fps: 30 },
           );
-          // Drop position tracks — those still have source-rig units (cm
-          // for Mixamo) and would teleport the root. Quaternion-only.
-          const rotOnly = retargeted.tracks.filter((t) =>
-            t.name.endsWith(".quaternion"),
-          );
-          finalClip = new THREE.AnimationClip(
-            source.clip.name,
-            retargeted.duration,
-            rotOnly,
-          );
-          usedRetarget = true;
+          // retargetClip emits tracks named ".bones[<bone>].quaternion".
+          // Rewrite to "<bone>.quaternion" so they bind against the rig root
+          // (same shape remapClipToRig produces), and drop position/scale —
+          // those carry source-rig units (cm for Mixamo) and would teleport
+          // the root. Quaternion-only.
+          const rotOnly = retargeted.tracks
+            .filter((t) => t.name.endsWith(".quaternion"))
+            .map((t) => {
+              const m = t.name.match(/^\.bones\[(.+?)\]\.quaternion$/);
+              if (!m) return t;
+              const nt = t.clone();
+              nt.name = `${m[1]}.quaternion`;
+              return nt;
+            });
+          // A 0-track result is a failure too (e.g. no bones resolved) — only
+          // accept the retarget when it actually produced tracks, otherwise
+          // fall through to the deterministic remap below.
+          if (rotOnly.length > 0) {
+            finalClip = new THREE.AnimationClip(
+              source.clip.name,
+              retargeted.duration,
+              rotOnly,
+            );
+            usedRetarget = true;
+          }
           console.log(
             `[AnimationPlayer] Retarget produced ${retargeted.tracks.length} tracks; kept ${rotOnly.length} rotation tracks`,
           );
