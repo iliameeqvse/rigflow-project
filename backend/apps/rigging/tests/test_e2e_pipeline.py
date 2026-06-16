@@ -184,3 +184,44 @@ class LandmarkDebugPhotoTest(TestCase):
             bool(rig.landmark_debug_image),
             "llm_vision run should populate landmark_debug_image",
         )
+
+
+class PreserveExistingRigTest(TestCase):
+    """An upload that already has a skinning armature keeps its skeleton
+    (Rigify skipped, original rig preserved) instead of being re-rigged."""
+
+    # A Mixamo-rigged FBX on disk (has a skinning armature + mixamorig bones).
+    _RIGGED_FBX = Path(settings.MEDIA_ROOT) / (
+        "rigs/1/84ea5a03-0d93-4269-a245-e76add828b2b/Remy.fbx"
+    )
+
+    def setUp(self):
+        if not self._RIGGED_FBX.exists():
+            self.skipTest("rigged test FBX (Remy) not present")
+        if not Path(settings.BLENDER_EXECUTABLE).is_file():
+            self.skipTest("Blender not installed")
+
+    def test_existing_rig_is_preserved(self):
+        from apps.rigging.tasks import _run_rig_pipeline
+        from apps.rigging.landmark_vision.none_provider import NoneProvider
+
+        rig = _make_rig(self._RIGGED_FBX)
+        # The provider is never consulted on the keep-rig path (Phase 1 reports
+        # already_rigged and skips it), but patch it anyway so the test never
+        # touches the network regardless of a developer's .env.
+        with patch(
+            "apps.rigging.landmark_vision.get_provider",
+            return_value=NoneProvider(),
+        ):
+            result = _run_rig_pipeline(str(rig.id))
+
+        rig.refresh_from_db()
+        self.assertEqual(result["status"], "done",
+                         f"Rig should finish done; error: {rig.error_message}")
+        self.assertEqual(rig.status, "done")
+        self.assertTrue(rig.used_existing_rig,
+                        "an already-rigged upload should set used_existing_rig")
+        self.assertEqual(rig.detection_method, "preserved")
+        self.assertGreater(len(rig.bone_mapping or {}), 0,
+                           "preserved rig should still produce a bone map")
+        self.assertTrue(bool(rig.rigged_glb), "rigged GLB must be saved")
