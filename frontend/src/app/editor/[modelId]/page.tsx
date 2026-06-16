@@ -296,18 +296,20 @@ export default function EditorPage() {
               >
                 View model
               </TabButton>
-              <TabButton
-                active={tab === "edit-rig"}
-                onClick={() => {
-                  setTab("edit-rig");
-                  setPlayAnimation(false);
-                  setShowSkeleton(false);
-                  setLandmarkQueued(false);
-                }}
-                icon={<TargetIcon className="h-3.5 w-3.5" />}
-              >
-                Edit rig
-              </TabButton>
+              {!usedExistingRig && (
+                <TabButton
+                  active={tab === "edit-rig"}
+                  onClick={() => {
+                    setTab("edit-rig");
+                    setPlayAnimation(false);
+                    setShowSkeleton(false);
+                    setLandmarkQueued(false);
+                  }}
+                  icon={<TargetIcon className="h-3.5 w-3.5" />}
+                >
+                  Edit rig
+                </TabButton>
+              )}
               <TabButton
                 active={tab === "play"}
                 onClick={() => {
