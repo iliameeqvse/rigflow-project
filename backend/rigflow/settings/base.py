@@ -126,8 +126,8 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_THROTTLE_RATES": {
         # 🔹 1. Global rates
-        "anon": "5/minute",     # ანონიმური → მაქს 5 req/წუთში
-        "user": "10/minute",    # ავტ. მომხმარებელი → მაქს 10 req/წუთში
+        "anon": "30/minute",    # ანონიმური → მაქს 30 req/წუთში
+        "user": "120/minute",   # ავტ. მომხმარებელი → მაქს 120 req/წუთში
 
         # 🔹 2. Scoped rates (posts app)
         "posts_list":   "20/minute",   # GET /posts/
@@ -137,10 +137,10 @@ REST_FRAMEWORK = {
         "post_burst":   "1/10seconds", # Custom: მაქს 1 POST 10 წამში
 
         # ── Upload throttles ──────────────────────────────────────────────
-        "anon_upload":      "0/minute",  # anonymous → ყოველთვის 429
-        "user_upload":      "10/hour",   # default upload rate
-        "rig_upload":       "10/hour",    # POST /rigs/ + rerig (Blender მძიმეა)
-        "animation_upload": "15/hour",   # POST /animations/
+        "anon_upload":      "0/minute",  # anonymous → ყოველთვის 429 (security: keep 0)
+        "user_upload":      "100/hour",  # default upload rate
+        "rig_upload":       "100/hour",  # POST /rigs/ + rerig (Blender მძიმეა)
+        "animation_upload": "100/hour",  # POST /animations/
 
         # ── Read throttles ────────────────────────────────────────────────
         "rig_list":         "30/minute", # GET /rigs/
