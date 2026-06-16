@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import RiggedModel
+from .models import RiggedModel, AnimationExport
 
 
 class RiggedModelSerializer(serializers.ModelSerializer):
@@ -42,6 +42,26 @@ class RiggedModelSerializer(serializers.ModelSerializer):
             if request:
                 return request.build_absolute_uri(obj.landmark_debug_image.url)
             return obj.landmark_debug_image.url
+        return None
+
+
+class AnimationExportSerializer(serializers.ModelSerializer):
+    download_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AnimationExport
+        fields = [
+            "id", "rig", "animation_ids", "export_format",
+            "status", "download_url", "report", "error_message", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_download_url(self, obj) -> str | None:
+        if obj.output_file:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(obj.output_file.url)
+            return obj.output_file.url
         return None
 
 
