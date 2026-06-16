@@ -29,6 +29,10 @@ cases = {
     "Left_Foot": "LeftFoot",
     "RightUpLeg": "RightUpLeg",
     "clavicle_l": "LeftShoulder",
+    # Sided "hip" is the thigh in many game rigs → UpLeg, not the torso Hips.
+    "l_hip": "LeftUpLeg",
+    "r_hip": "RightUpLeg",
+    "hips": "Hips",
     "IK_Hand_L": None,
     "knee_pole_target_R": None,
     "some_random_prop": None,

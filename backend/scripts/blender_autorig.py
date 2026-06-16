@@ -17,6 +17,7 @@ import argparse
 import heapq
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -1614,8 +1615,6 @@ RIGIFY_TO_MIXAMO = {
     "DEF-f_pinky.03.R":  "RightHandPinky3",
 }
 
-import re as _re
-
 # Mixamo names we already know (the values of RIGIFY_TO_MIXAMO, incl. fingers).
 _KNOWN_MIXAMO = set(RIGIFY_TO_MIXAMO.values())
 
@@ -1630,50 +1629,50 @@ def canonical_mixamo_name(raw):
       2. Otherwise lower-case and match common naming conventions for the body
          bones. Returns None for control/non-deform bones and anything unknown.
     """
-    stripped = _re.sub(r"^.*[:|]", "", raw)
-    stripped = _re.sub(r"^mixamorig\d*", "", stripped)
+    stripped = re.sub(r"^.*[:|]", "", raw)
+    stripped = re.sub(r"^mixamorig\d*", "", stripped)
     if stripped in _KNOWN_MIXAMO:
         return stripped
 
-    core = _re.sub(r"_(?:bn|bone|jnt|joint|ctrl|grp)$", "", stripped, flags=_re.I)
+    core = re.sub(r"_(?:bn|bone|jnt|joint|ctrl|grp)$", "", stripped, flags=re.I)
     core = core.lower().strip()
 
     side = ""
-    m = _re.match(r"^(l|left|r|right)[_.\- ]", core)
+    m = re.match(r"^(l|left|r|right)[_. -]", core)
     if m:
         side = "Left" if m.group(1)[0] == "l" else "Right"
         core = core[m.end():]
     else:
-        m = _re.search(r"[_.\- ](l|left|r|right)$", core)
+        m = re.search(r"[_. -](l|left|r|right)$", core)
         if m:
             side = "Left" if m.group(1)[0] == "l" else "Right"
             core = core[: m.start()]
     core = core.strip("_.- ")
 
     # Skip control / helper bones we never want to drive.
-    if _re.search(r"ik|effector|pole|target|ctrl|helper|twist|roll", core):
+    if re.search(r"ik|effector|pole|target|ctrl|helper|twist|roll", core):
         return None
 
-    # Torso (no side)
-    if _re.fullmatch(r"hips?|pelvis|root", core):                 return "Hips"
-    if _re.fullmatch(r"spine", core):                             return "Spine"
-    if _re.fullmatch(r"spine_?0?1|chest", core):                  return "Spine1"
-    if _re.fullmatch(r"spine_?0?2|upper_?chest", core):           return "Spine2"
-    if _re.fullmatch(r"neck", core):                              return "Neck"
-    if _re.fullmatch(r"head", core):                              return "Head"
-
     if not side:
+        # Torso bones carry no side. (Sided "hip" → UpLeg is handled below, so
+        # it must NOT be matched here — that was the l_hip/r_hip bug.)
+        if re.fullmatch(r"hips?|pelvis|root", core):              return "Hips"
+        if re.fullmatch(r"spine", core):                          return "Spine"
+        if re.fullmatch(r"spine_?0?1|chest", core):               return "Spine1"
+        if re.fullmatch(r"spine_?0?2|upper_?chest", core):        return "Spine2"
+        if re.fullmatch(r"neck", core):                           return "Neck"
+        if re.fullmatch(r"head", core):                           return "Head"
         return None
 
     # Sided limbs
-    if _re.fullmatch(r"shoulder|clavicle", core):                 return f"{side}Shoulder"
-    if _re.fullmatch(r"arm|upper_?arm|uparm", core):              return f"{side}Arm"
-    if _re.fullmatch(r"forearm|lower_?arm|elbow", core):          return f"{side}ForeArm"
-    if _re.fullmatch(r"hand|wrist", core):                        return f"{side}Hand"
-    if _re.fullmatch(r"up_?leg|upper_?leg|thigh|hip", core):      return f"{side}UpLeg"
-    if _re.fullmatch(r"leg|lower_?leg|shin|calf|knee", core):     return f"{side}Leg"
-    if _re.fullmatch(r"foot|ankle", core):                        return f"{side}Foot"
-    if _re.fullmatch(r"toe|toe_?base|ball", core):                return f"{side}ToeBase"
+    if re.fullmatch(r"shoulder|clavicle", core):                  return f"{side}Shoulder"
+    if re.fullmatch(r"arm|upper_?arm|uparm", core):               return f"{side}Arm"
+    if re.fullmatch(r"forearm|lower_?arm|elbow", core):           return f"{side}ForeArm"
+    if re.fullmatch(r"hand|wrist", core):                         return f"{side}Hand"
+    if re.fullmatch(r"up_?leg|upper_?leg|thigh|hip", core):       return f"{side}UpLeg"
+    if re.fullmatch(r"leg|lower_?leg|shin|calf|knee", core):      return f"{side}Leg"
+    if re.fullmatch(r"foot|ankle", core):                         return f"{side}Foot"
+    if re.fullmatch(r"toe|toe_?base|ball", core):                 return f"{side}ToeBase"
     return None
 
 
