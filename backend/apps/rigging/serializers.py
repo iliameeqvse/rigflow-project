@@ -23,6 +23,7 @@ class RiggedModelSerializer(serializers.ModelSerializer):
             "pose_angle_deg",
             "pose_confidence",
             "detection_method",
+            "used_existing_rig",
             "created_at",
         ]
         read_only_fields = fields
