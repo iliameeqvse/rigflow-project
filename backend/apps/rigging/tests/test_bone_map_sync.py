@@ -3,7 +3,7 @@ FALLBACK_MIXAMO_TO_DEF table must stay exact inverses of each other.
 
 These two maps are hand-maintained copies in different languages
 (backend/scripts/blender_autorig.py and
-frontend/src/components/AnimationPlayer.tsx). Adding a bone to one without
+frontend/src/lib/boneMap.ts). Adding a bone to one without
 the other silently breaks animation retargeting for rigs whose bone_mapping
 field is empty. This test makes that desync a hard failure.
 
@@ -21,12 +21,12 @@ from django.test import SimpleTestCase
 # parents:   [0]=tests [1]=rigging [2]=apps [3]=backend [4]=<repo root>
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _BACKEND_SRC = _REPO_ROOT / "backend" / "scripts" / "blender_autorig.py"
-_FRONTEND_SRC = _REPO_ROOT / "frontend" / "src" / "components" / "AnimationPlayer.tsx"
+_FRONTEND_SRC = _REPO_ROOT / "frontend" / "src" / "lib" / "boneMap.ts"
 
 
 def _backend_rigify_to_mixamo() -> dict:
     """Parse RIGIFY_TO_MIXAMO = { "DEF-bone": "Mixamo", ... } as text."""
-    text = _BACKEND_SRC.read_text()
+    text = _BACKEND_SRC.read_text(encoding="utf-8")
     block = re.search(r"RIGIFY_TO_MIXAMO\s*=\s*\{(.*?)\}", text, re.S)
     assert block, "RIGIFY_TO_MIXAMO block not found in blender_autorig.py"
     pairs = re.findall(r'"([^"]+)"\s*:\s*"([^"]+)"', block.group(1))
@@ -39,7 +39,7 @@ def _frontend_mixamo_to_def() -> dict:
     The block runs from the const declaration to the `// Mixamo finger
     naming` comment that introduces the generated finger entries.
     """
-    text = _FRONTEND_SRC.read_text()
+    text = _FRONTEND_SRC.read_text(encoding="utf-8")
     block = re.search(
         r"FALLBACK_MIXAMO_TO_DEF[^{]*\{(.*?)//\s*Mixamo finger naming",
         text, re.S,
