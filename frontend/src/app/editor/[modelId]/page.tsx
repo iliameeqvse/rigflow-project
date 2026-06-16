@@ -630,18 +630,19 @@ export default function EditorPage() {
                       </div>
                     )}
 
-                    {/* Baked GLB viewer — uses AnimationPlayer with baked url so the
-                        embedded animation plays; boneMapping is passed through but the
-                        baked GLB already contains the animation tracks natively. */}
-                    {bakedUrl && boneMapping !== null && (
+                    {/* Baked GLB viewer — the baked GLB already contains the
+                        animation tracks natively, so play them directly with
+                        ModelViewer (playAnimation), NOT AnimationPlayer (which
+                        retargets a separate clip and would show this static). */}
+                    {bakedUrl && (
                       <div className="mt-5 overflow-hidden rounded-2xl border border-accent/30">
                         <p className="border-b border-border bg-accent/5 px-4 py-2 text-xs font-medium text-accent">
                           Baked animation preview
                         </p>
-                        <AnimationPlayer
+                        <ModelViewer
                           key={bakedUrl}
-                          rigGlbUrl={bakedUrl}
-                          boneMapping={boneMapping}
+                          glbUrl={bakedUrl}
+                          playAnimation
                         />
                       </div>
                     )}
