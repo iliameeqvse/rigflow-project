@@ -133,3 +133,32 @@ class RiggedModel(models.Model):
 
     def __str__(self):
         return f"{self.name} — {self.get_status_display()}"
+
+
+class AnimationExport(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_PROCESSING = "processing"
+    STATUS_DONE = "done"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"), (STATUS_PROCESSING, "Processing"),
+        (STATUS_DONE, "Done"), (STATUS_FAILED, "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    rig = models.ForeignKey(
+        "RiggedModel", on_delete=models.CASCADE, related_name="exports")
+    animation_ids = models.JSONField(default=list)   # ordered Animation UUIDs
+    export_format = models.CharField(max_length=8, default="glb")
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES,
+                              default=STATUS_PENDING, db_index=True)
+    output_file = models.FileField(upload_to="exports/", blank=True)
+    report = models.JSONField(null=True, blank=True)
+    cache_key = models.CharField(max_length=64, blank=True, db_index=True)
+    celery_task_id = models.CharField(max_length=255, blank=True)
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
