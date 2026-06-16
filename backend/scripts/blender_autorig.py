@@ -2229,6 +2229,106 @@ def normalize_bilateral_landmark_sides(landmarks):
 # Main
 # ---------------------------------------------------------------------------
 
+def normalize_and_orient_existing_rig(armature, meshes, rotation_deg):
+    """Scale + orient + recenter a KEPT rig (armature + skinned meshes) as one
+    unit so the largest mesh is THREE_DISPLAY_HEIGHT tall, feet at Z=0,
+    XY-centered. The SAME world matrix is applied to the armature and every
+    mesh at each stage, so their relative alignment — and therefore the
+    skinning — is preserved; transforms are baked once at the end.
+
+    Object-level parenting is detached first (keeping each object's world
+    position). Skinning is driven by the ARMATURE MODIFIER + vertex groups,
+    not by object parenting, so detaching the hierarchy is safe and avoids
+    parent/child double-counting when the same matrix is applied to all.
+    """
+    real = [m for m in meshes if not _is_rigify_widget_object(m)]
+    if not real:
+        return
+    largest = max(real, key=lambda m: len(m.data.vertices))
+    group = [armature] + real
+
+    deselect_all()
+    for obj in group:
+        if obj.parent is not None:
+            mw = obj.matrix_world.copy()
+            obj.parent = None
+            obj.matrix_world = mw
+
+    # 1) Orientation — user preview-space rotation (no-op when all zero).
+    rx, ry, rz = rotation_deg
+    if abs(rx) > 1e-6 or abs(ry) > 1e-6 or abs(rz) > 1e-6:
+        apply_matrix_world(group, _preview_rotation_matrix(rx, ry, rz))
+
+    # 2) Uniform scale to target height (about world origin).
+    h = aabb(world_vertices([largest]))["size"].z
+    if h > 1e-6:
+        apply_matrix_world(group, Matrix.Scale(THREE_DISPLAY_HEIGHT / h, 4))
+
+    # 3) Recenter: feet (min Z) -> 0, XY centered on the largest mesh.
+    b = aabb(world_vertices([largest]))
+    apply_matrix_world(group, Matrix.Translation((
+        -(b["min"].x + b["max"].x) / 2.0,
+        -(b["min"].y + b["max"].y) / 2.0,
+        -b["min"].z,
+    )))
+
+    # Bake all object transforms into mesh/armature data in one pass.
+    apply_transforms(group, location=True, rotation=True, scale=True)
+
+    final = aabb(world_vertices([largest]))
+    log(f"Normalized existing rig -> {final['size'].z:.3f}m tall, "
+        f"feet at {final['min'].z:+.3f}, "
+        f"X[{final['min'].x:+.2f},{final['max'].x:+.2f}]")
+
+
+def _run_keep_existing_rig(args, armature):
+    """Keep-rig branch: preserve the uploaded skeleton, skip Rigify.
+
+    Phase 1 (--render-ortho-views): write {"already_rigged": true} to the AI
+    request file and exit so tasks.py skips the vision call.
+    Phase 2: normalize + orient, build a best-effort bone map, export the
+    original skeleton + skinned mesh.
+    """
+    meshes = get_meshes()
+    if not meshes:
+        raise RuntimeError("No meshes found after import")
+    log(f"KEEP-RIG: preserving existing armature '{armature.name}' "
+        f"({len(armature.data.bones)} bones)")
+
+    if args.render_ortho_views:
+        if not args.ai_request_out:
+            log("ERROR: --render-ortho-views requires --ai-request-out")
+            sys.exit(1)
+        Path(args.ai_request_out).write_text(json.dumps({
+            "already_rigged": True,
+            "armature": armature.name,
+        }, indent=2))
+        log("KEEP-RIG: wrote already_rigged request; exiting phase 1.")
+        sys.exit(0)
+
+    normalize_and_orient_existing_rig(
+        armature, meshes,
+        (args.initial_rotation_x, args.initial_rotation_y, args.initial_rotation_z),
+    )
+
+    if args.pose:
+        Path(args.pose).write_text(json.dumps({
+            "classification": "unclear", "angle_deg": None,
+            "confidence": 0.0, "reason": "existing rig preserved",
+        }, indent=2))
+
+    bone_map = build_bone_map_from_existing(armature)
+    Path(args.bones).write_text(json.dumps(bone_map, indent=2))
+
+    # No Rigify landmarks for a kept rig; emit an empty sidecar so the task's
+    # landmarks read is a harmless no-op.
+    if args.landmarks_out:
+        Path(args.landmarks_out).write_text(json.dumps({}, indent=2))
+
+    export_glb(meshes, armature, args.output)
+    log(f"KEEP-RIG SUCCESS — preserved skeleton, {len(bone_map)} bones mapped")
+
+
 def main():
     args = parse_args()
     log(f"Input:  {args.input}")
@@ -2236,8 +2336,19 @@ def main():
 
     clear_scene()
     import_model(args.input, args.format)
-    strip_non_meshes()
     purge_missing_image_refs()
+
+    # Keep-rig path: if the upload already has an armature skinning the largest
+    # mesh, preserve it and skip Rigify entirely. Must run BEFORE
+    # strip_non_meshes() (which deletes the source armature). Explicit landmark
+    # re-rigs (args.landmarks) always re-rig with Rigify, so they bypass this.
+    if not args.landmarks:
+        _kept_arm = find_skinning_armature(get_meshes())
+        if _kept_arm is not None:
+            _run_keep_existing_rig(args, _kept_arm)
+            return
+
+    strip_non_meshes()
 
     meshes = get_meshes()
     if not meshes:
