@@ -36,6 +36,7 @@ export default function EditorPage() {
   const [poseAngle, setPoseAngle]                   = useState<number | null>(null);
   const [poseConfidence, setPoseConfidence]         = useState<number>(0);
   const [detectionMethod, setDetectionMethod]       = useState<string>("");
+  const [usedExistingRig, setUsedExistingRig]       = useState<boolean>(false);
 
   // Fetch the rig's bone map, Blender stdout, and pose classification once
   // rigging completes. The status endpoint doesn't carry these — only the
@@ -50,6 +51,7 @@ export default function EditorPage() {
         pose_angle_deg?: number | null;
         pose_confidence?: number;
         detection_method?: string;
+        used_existing_rig?: boolean;
       }>(`/rigs/${modelId}/`)
       .then(({ data }) => {
         setBoneMapping(data.bone_mapping ?? {});
@@ -58,6 +60,7 @@ export default function EditorPage() {
         setPoseAngle(data.pose_angle_deg ?? null);
         setPoseConfidence(data.pose_confidence ?? 0);
         setDetectionMethod(data.detection_method ?? "");
+        setUsedExistingRig(data.used_existing_rig ?? false);
       })
       .catch(() => {
         setBoneMapping({});
@@ -66,6 +69,7 @@ export default function EditorPage() {
         setPoseAngle(null);
         setPoseConfidence(0);
         setDetectionMethod("");
+        setUsedExistingRig(false);
       });
   }, [status, modelId, landmarkQueued]);
 
@@ -241,6 +245,11 @@ export default function EditorPage() {
                         {!["llm_vision","geometry","user_landmarks","failed"].includes(detectionMethod) && detectionMethod}
                       </span>
                     )}
+                    {usedExistingRig && (
+                      <span className="ml-2 inline-block rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-xs text-accent">
+                        Original rig preserved
+                      </span>
+                    )}
                   </div>
                 </div>
                 <a
@@ -392,7 +401,7 @@ export default function EditorPage() {
                 </motion.div>
               )}
 
-              {tab === "edit-rig" && (
+              {tab === "edit-rig" && !usedExistingRig && (
                 <motion.div
                   key="edit-rig"
                   initial={{ opacity: 0, y: 8 }}

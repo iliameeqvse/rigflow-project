@@ -113,6 +113,7 @@ export interface RiggedModel {
   pose_angle_deg?: number | null;
   pose_confidence?: number;
   detection_method?: DetectionMethod;
+  used_existing_rig?: boolean;
   created_at: string;
 }
 
