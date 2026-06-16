@@ -1,12 +1,28 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { Workflow, Sparkles, Film } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { IconBar, IconBarItem } from "@/components/ui/icon-bar";
+
+// Override the icon-bar's built-in neutral palette with RigFlow's lime brand.
+// `!` (Tailwind v4 important) is required to beat the component's class-dark vars.
+const limeIconBarTheme =
+  "[--ic-muted:#161b22]! [--ic-muted-foreground:#8b949e]! [--ic-accent:#ccff00]! [--ic-foreground:#0b0e14]! [--ic-ring:rgba(204,255,0,0.45)]!";
 
 export function Header() {
+  const router = useRouter();
   const { user, loggedIn, checked, logout } = useAuth();
+
+  // Smooth-scroll to a section if it's on the current page, otherwise route home to it.
+  const goToSection = (hash: string) => {
+    const el = typeof document !== "undefined" ? document.querySelector(hash) : null;
+    if (el) el.scrollIntoView({ behavior: "smooth" });
+    else router.push(`/${hash}`);
+  };
   const [menuOpen, setMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
@@ -37,16 +53,24 @@ export function Header() {
           </span>
         </Link>
 
-        <nav className="hidden md:flex items-center gap-8 text-sm text-muted-foreground">
-          <a href="#pipeline" className="hover:text-foreground transition-colors">
-            Pipeline
-          </a>
-          <a href="#features" className="hover:text-foreground transition-colors">
-            Features
-          </a>
-          <Link href="/animations" className="hover:text-foreground transition-colors">
-            Animations
-          </Link>
+        <nav className="hidden md:block" aria-label="Primary">
+          <IconBar className={limeIconBarTheme}>
+            <IconBarItem
+              icon={Workflow}
+              label="Pipeline"
+              onClick={() => goToSection("#pipeline")}
+            />
+            <IconBarItem
+              icon={Sparkles}
+              label="Features"
+              onClick={() => goToSection("#features")}
+            />
+            <IconBarItem
+              icon={Film}
+              label="Animations"
+              onClick={() => router.push("/animations")}
+            />
+          </IconBar>
         </nav>
 
         <div className="flex items-center gap-2">

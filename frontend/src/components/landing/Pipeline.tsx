@@ -3,6 +3,7 @@
 import { motion, useInView, useScroll, useTransform } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { Reveal } from "./Reveal";
+import ShaderBackground from "@/components/ui/shader-background";
 
 const STEPS = [
   {
@@ -40,8 +41,17 @@ export function Pipeline() {
     <section
       id="pipeline"
       ref={sectionRef}
-      className="relative py-32 sm:py-40"
+      className="relative isolate py-32 sm:py-40"
     >
+      {/* Animated lime shader backdrop, scoped to this section */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+        <ShaderBackground className="absolute inset-0 h-full w-full" />
+        {/* Scrim + edge fades keep the steps and code blocks legible */}
+        <div className="absolute inset-0 bg-background/70" />
+        <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-background to-transparent" />
+        <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-background to-transparent" />
+      </div>
+
       <div className="mx-auto max-w-7xl px-6">
         <Reveal className="max-w-3xl">
           <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">

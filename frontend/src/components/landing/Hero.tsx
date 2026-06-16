@@ -4,6 +4,7 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/useAuth";
+import { ShaderBackdrop } from "@/components/ui/shader-backdrop";
 
 const HeroScene = dynamic(() => import("./HeroScene"), { ssr: false });
 
@@ -16,6 +17,9 @@ export function Hero() {
 
   return (
     <section className="relative isolate min-h-[100svh] overflow-hidden pt-32 pb-24">
+      {/* Animated shader backdrop (subtle, behind the aurora) */}
+      <ShaderBackdrop intensity={0.5} />
+
       {/* Aurora gradient background */}
       <div className="pointer-events-none absolute inset-0 -z-10">
         <div className="absolute -top-1/3 -left-1/4 h-[80vh] w-[80vh] rounded-full bg-accent/20 blur-[140px] [animation:var(--animate-aurora-1)]" />

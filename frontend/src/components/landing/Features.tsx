@@ -3,6 +3,7 @@
 import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
 import { ReactNode, useRef } from "react";
 import { Reveal } from "./Reveal";
+import { ShaderAnimation as ShaderLines } from "@/components/ui/shader-lines";
 
 const FEATURES = [
   {
@@ -45,7 +46,16 @@ const FEATURES = [
 
 export function Features() {
   return (
-    <section id="features" className="relative py-32 sm:py-40">
+    <section id="features" className="relative isolate py-32 sm:py-40">
+      {/* Animated lime shader-lines backdrop, scoped to this section */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+        <ShaderLines />
+        {/* Scrim + edge fades keep the cards legible */}
+        <div className="absolute inset-0 bg-background/75" />
+        <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-background to-transparent" />
+        <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-background to-transparent" />
+      </div>
+
       <div className="mx-auto max-w-7xl px-6">
         <Reveal className="max-w-3xl">
           <span className="font-mono text-xs uppercase tracking-[0.25em] text-accent">

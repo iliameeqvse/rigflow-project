@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import api, { extractApiError, saveAuth } from "@/lib/api";
+import { ShaderBackdrop } from "@/components/ui/shader-backdrop";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -32,10 +33,8 @@ export default function SignupPage() {
 
   return (
     <div className="relative isolate min-h-[100svh] overflow-hidden pt-32 pb-16">
-      <div className="pointer-events-none absolute inset-0 -z-10">
-        <div className="absolute -top-1/3 right-1/4 h-[60vh] w-[60vh] rounded-full bg-accent/15 blur-[140px] [animation:var(--animate-aurora-2)]" />
-        <div className="absolute bottom-0 left-1/4 h-[55vh] w-[55vh] rounded-full bg-cyan/20 blur-[140px] [animation:var(--animate-aurora-1)]" />
-      </div>
+      {/* Animated shader backdrop */}
+      <ShaderBackdrop />
 
       <motion.div
         initial={{ opacity: 0, y: 16, filter: "blur(8px)" }}
