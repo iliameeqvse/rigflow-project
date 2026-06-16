@@ -130,7 +130,7 @@ export interface Animation {
   id: string;
   name: string;
   slug: string;
-  category: { name: string; slug: string; icon: string };
+  category: { name: string; slug: string; icon: string } | null;
   gltf_file: string;
   preview_gif: string | null;
   duration_frames: number;

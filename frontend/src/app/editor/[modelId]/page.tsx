@@ -578,7 +578,7 @@ export default function EditorPage() {
                             />
                             <span className="text-sm text-foreground">{anim.name}</span>
                             <span className="ml-auto text-xs text-muted-foreground">
-                              {anim.category.name}
+                              {anim.category?.name ?? "Uncategorized"}
                             </span>
                           </label>
                         ))}
