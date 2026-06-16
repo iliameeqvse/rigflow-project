@@ -62,11 +62,13 @@ class RiggedModel(models.Model):
     DETECTION_LLM_VISION     = "llm_vision"
     DETECTION_USER_LANDMARKS = "user_landmarks"
     DETECTION_FAILED         = "failed"
+    DETECTION_PRESERVED      = "preserved"
     DETECTION_METHOD_CHOICES = [
         ("geometry",       "Geometry only"),
         ("llm_vision",     "LLM vision + geometry refine"),
         ("user_landmarks", "User-supplied landmarks"),
         ("failed",         "AI + geometry both failed; AABB defaults used"),
+        ("preserved",      "Original uploaded rig preserved"),
     ]
     detection_method = models.CharField(
         max_length=24, choices=DETECTION_METHOD_CHOICES,
@@ -78,6 +80,13 @@ class RiggedModel(models.Model):
         help_text=(
             "Raw validated response from the LLM vision provider, kept for "
             "debugging and audit. Null when detection_method is not 'llm_vision'."
+        ),
+    )
+    used_existing_rig = models.BooleanField(
+        default=False, db_index=True,
+        help_text=(
+            "True when the upload already had a skeleton that skins the mesh; "
+            "Rigify was skipped and the original rig kept."
         ),
     )
 
