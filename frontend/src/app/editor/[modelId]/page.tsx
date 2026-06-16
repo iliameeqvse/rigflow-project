@@ -1,13 +1,20 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRigStatus } from "@/hooks/useRigStatus";
 import { ModelViewer } from "@/components/ModelViewer";
 import { LandmarkEditor, LandmarkPositions } from "@/components/LandmarkEditor";
 import { AnimationPlayer } from "@/components/AnimationPlayer";
-import api, { extractApiError } from "@/lib/api";
+import api, {
+  extractApiError,
+  listAnimations,
+  exportRig,
+  getExport,
+  type Animation,
+  type AnimationExport,
+} from "@/lib/api";
 import { isAxiosError } from "axios";
 
 type Tab = "view" | "edit-rig" | "play";
@@ -37,6 +44,22 @@ export default function EditorPage() {
   const [poseConfidence, setPoseConfidence]         = useState<number>(0);
   const [detectionMethod, setDetectionMethod]       = useState<string>("");
   const [usedExistingRig, setUsedExistingRig]       = useState<boolean>(false);
+
+  // ── Export-with-animations state ──────────────────────────────────────────
+  const [libraryAnims, setLibraryAnims]         = useState<Animation[]>([]);
+  const [selectedAnimIds, setSelectedAnimIds]   = useState<string[]>([]);
+  const [exportState, setExportState]           = useState<AnimationExport | null>(null);
+  const [exporting, setExporting]               = useState(false);
+  const [exportError, setExportError]           = useState<string | null>(null);
+  const [bakedUrl, setBakedUrl]                 = useState<string | null>(null);
+  const exportPollRef                           = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear export poll on unmount
+  useEffect(() => {
+    return () => {
+      if (exportPollRef.current) clearTimeout(exportPollRef.current);
+    };
+  }, []);
 
   // Fetch the rig's bone map, Blender stdout, and pose classification once
   // rigging completes. The status endpoint doesn't carry these — only the
@@ -135,6 +158,65 @@ export default function EditorPage() {
   };
 
   const effectiveStatus = landmarkQueued && status === "done" ? "done" : status;
+
+  // ── Export helpers (need effectiveStatus in scope) ────────────────────────
+
+  useEffect(() => {
+    if (tab !== "play" || effectiveStatus !== "done") return;
+    listAnimations()
+      .then(({ data }) => setLibraryAnims(data))
+      .catch(() => setLibraryAnims([]));
+  }, [tab, effectiveStatus]);
+
+  const handleToggleAnim = (id: string) => {
+    setSelectedAnimIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
+
+  const scheduleExportPoll = (expId: string) => {
+    exportPollRef.current = setTimeout(async () => {
+      try {
+        const { data } = await getExport(modelId, expId);
+        setExportState(data);
+        if (data.status === "done") {
+          setExporting(false);
+        } else if (data.status === "failed") {
+          setExporting(false);
+          setExportError(data.error_message ?? "Export failed.");
+        } else {
+          scheduleExportPoll(expId);
+        }
+      } catch {
+        setExporting(false);
+        setExportError("Failed to poll export status.");
+      }
+    }, 2000);
+  };
+
+  const handleExportWithAnimations = async () => {
+    if (!modelId || exporting || selectedAnimIds.length === 0) return;
+    setExporting(true);
+    setExportError(null);
+    setExportState(null);
+    setBakedUrl(null);
+    if (exportPollRef.current) clearTimeout(exportPollRef.current);
+    try {
+      const { data } = await exportRig(modelId, selectedAnimIds);
+      setExportState(data);
+      if (data.status === "done") {
+        setExporting(false);
+      } else if (data.status === "failed") {
+        setExporting(false);
+        setExportError(data.error_message ?? "Export failed.");
+      } else {
+        scheduleExportPoll(data.id);
+      }
+    } catch (err: unknown) {
+      setExporting(false);
+      setExportError(extractApiError(err, "Export failed."));
+    }
+  };
 
   return (
     <div className="relative isolate min-h-[100svh] pt-28 pb-16">
@@ -469,6 +551,101 @@ export default function EditorPage() {
                       boneMapping={boneMapping}
                     />
                   )}
+
+                  {/* ── Export with animations ── */}
+                  <div className="mt-6 rounded-xl border border-border bg-surface/40 p-5">
+                    <h3 className="mb-3 text-sm font-semibold text-foreground">
+                      Export with animations
+                    </h3>
+                    <p className="mb-4 text-xs text-muted-foreground">
+                      Select one or more library animations to bake into a single downloadable animated GLB.
+                    </p>
+
+                    {libraryAnims.length === 0 ? (
+                      <div className="text-xs text-muted-foreground">Loading animations…</div>
+                    ) : (
+                      <div className="mb-4 max-h-48 overflow-y-auto rounded-lg border border-border bg-background/60">
+                        {libraryAnims.map((anim) => (
+                          <label
+                            key={anim.id}
+                            className="flex cursor-pointer items-center gap-3 border-b border-border px-3 py-2.5 last:border-b-0 hover:bg-surface/60"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedAnimIds.includes(anim.id)}
+                              onChange={() => handleToggleAnim(anim.id)}
+                              className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                            />
+                            <span className="text-sm text-foreground">{anim.name}</span>
+                            <span className="ml-auto text-xs text-muted-foreground">
+                              {anim.category.name}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={handleExportWithAnimations}
+                      disabled={exporting || selectedAnimIds.length === 0}
+                      className="inline-flex items-center gap-2 rounded-full bg-accent px-5 py-2 text-sm font-semibold text-background shadow-[var(--shadow-glow-accent)] transition-transform hover:scale-[1.02] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {exporting ? <Spinner /> : <DownloadIcon className="h-4 w-4" />}
+                      {exporting ? "Baking…" : "Export with animations"}
+                    </button>
+
+                    {/* Status / progress */}
+                    {exporting && exportState && (
+                      <p className="mt-3 text-xs text-muted-foreground">
+                        Status: <span className="font-medium text-accent">{exportState.status}</span>
+                        {" — baking animations into GLB, this may take a moment…"}
+                      </p>
+                    )}
+
+                    {/* Error */}
+                    {exportError && (
+                      <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-4 py-2.5 text-sm text-danger">
+                        {exportError}
+                      </div>
+                    )}
+
+                    {/* Done: download + play baked result */}
+                    {exportState?.status === "done" && exportState.download_url && (
+                      <div className="mt-4 flex flex-wrap items-center gap-3">
+                        <a
+                          href={exportState.download_url}
+                          download
+                          className="inline-flex items-center gap-2 rounded-full border border-accent/40 bg-accent/10 px-4 py-1.5 text-sm font-semibold text-accent transition-colors hover:bg-accent/20"
+                        >
+                          <DownloadIcon className="h-4 w-4" />
+                          Download baked GLB
+                        </a>
+                        <button
+                          onClick={() => setBakedUrl(exportState.download_url)}
+                          className="inline-flex items-center gap-2 rounded-full border border-border bg-surface/60 px-4 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground"
+                        >
+                          <PlayIcon className="h-3.5 w-3.5" />
+                          Play baked result
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Baked GLB viewer — uses AnimationPlayer with baked url so the
+                        embedded animation plays; boneMapping is passed through but the
+                        baked GLB already contains the animation tracks natively. */}
+                    {bakedUrl && boneMapping !== null && (
+                      <div className="mt-5 overflow-hidden rounded-2xl border border-accent/30">
+                        <p className="border-b border-border bg-accent/5 px-4 py-2 text-xs font-medium text-accent">
+                          Baked animation preview
+                        </p>
+                        <AnimationPlayer
+                          key={bakedUrl}
+                          rigGlbUrl={bakedUrl}
+                          boneMapping={boneMapping}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>

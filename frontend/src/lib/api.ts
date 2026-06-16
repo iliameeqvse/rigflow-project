@@ -208,12 +208,6 @@ export const listAnimations = (params?: {
   is_looping?: boolean;
 }) => api.get<Animation[]>("/animations/", { params });
 
-export const retargetAnimation = (animId: string, rigId: string) =>
-  api.post<{ task_id: string; status: string }>(
-    `/animations/${animId}/retarget/`,
-    { rig_id: rigId },
-  );
-
 export const uploadAnimation = (
   file: File,
   name: string,
@@ -226,10 +220,30 @@ export const uploadAnimation = (
   return api.post<Animation>("/animations/", form);
 };
 
-export const exportProject = (projectId: string, format: "glb" | "fbx") =>
-  api.post<{ download_url: string }>(`/projects/${projectId}/export/`, {
+// ── Animation Export ──────────────────────────────────────────────────────────
+
+export interface AnimationExport {
+  id: string;
+  status: "pending" | "processing" | "done" | "failed";
+  download_url: string | null;
+  report: unknown;
+  error_message?: string;
+  animation_ids: string[];
+  export_format: string;
+}
+
+export const exportRig = (
+  rigId: string,
+  animationIds: string[],
+  format: "glb" = "glb",
+) =>
+  api.post<AnimationExport>(`/rigs/${rigId}/export/`, {
+    animation_ids: animationIds,
     format,
   });
+
+export const getExport = (rigId: string, exportId: string) =>
+  api.get<AnimationExport>(`/rigs/${rigId}/exports/${exportId}/`);
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
 
