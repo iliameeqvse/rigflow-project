@@ -113,7 +113,7 @@ class RiggedModelViewSet(ModelViewSet):
         # Status polling AND detail read are public so the editor page can
         # surface bone_mapping / rig_log without 404'ing on rigs that were
         # created via the anonymous demo-profile fallback in `create()`.
-        if self.action in ("status_action", "retrieve", "landmarks"):
+        if self.action in ("status_action", "retrieve", "landmarks", "export_status"):
             return [AllowAny()]
         return [IsAuthenticated()]
 
@@ -128,7 +128,7 @@ class RiggedModelViewSet(ModelViewSet):
         # initialize_request *after* this runs), so we resolve via action_map.
         method = self.request.method.lower() if getattr(self, "request", None) else None
         action = (getattr(self, "action_map", None) or {}).get(method)
-        if action in ("status_action", "retrieve", "landmarks"):
+        if action in ("status_action", "retrieve", "landmarks", "export_status"):
             return []
         return super().get_authenticators()
 
@@ -144,9 +144,9 @@ class RiggedModelViewSet(ModelViewSet):
         """
         if self.action == "create":
             return [AnonUploadThrottle(), RigUploadThrottle()]
-        if self.action in ("rerig", "rerig_landmarks"):
+        if self.action in ("rerig", "rerig_landmarks", "export"):
             return [RigUploadThrottle()]
-        if self.action in ("status_action", "landmarks"):
+        if self.action in ("status_action", "landmarks", "export_status"):
             return []
         return [RigListThrottle()]
 
@@ -356,3 +356,67 @@ class RiggedModelViewSet(ModelViewSet):
         auto_rig_model_with_landmarks.delay(str(rig.id), landmarks)
 
         return Response({"status": "pending", "rig_id": str(rig.id)}, status=status.HTTP_202_ACCEPTED)
+
+    def _export_data(self, exp, request):
+        from .serializers import AnimationExportSerializer
+        return AnimationExportSerializer(exp, context={"request": request}).data
+
+    @extend_schema(
+        summary="Bake selected animations onto the rig and export an animated GLB",
+        description=(
+            "Body: {animation_ids: [uuid, ...], format: 'glb'}. Runs a Blender "
+            "retarget+bake on Celery and returns an export job to poll. A "
+            "matching prior export is returned from cache.\n\n**Throttle:** 10/hour."
+        ),
+        responses={
+            202: OpenApiResponse(description="Accepted — baking in background"),
+            200: OpenApiResponse(description="Cached export returned"),
+            400: OpenApiResponse(description="Missing animation_ids / unsupported format"),
+        },
+        tags=["Rigging"],
+    )
+    @action(detail=True, methods=["post"], url_path="export")
+    def export(self, request, id=None):
+        try:
+            rig = RiggedModel.objects.get(id=id)
+        except RiggedModel.DoesNotExist:
+            return Response({"error": "Rig not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        animation_ids = request.data.get("animation_ids") or []
+        fmt = (request.data.get("format") or "glb").lower()
+        if not isinstance(animation_ids, list) or not animation_ids:
+            return Response({"error": "animation_ids (non-empty list) required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if fmt != "glb":
+            return Response({"error": "Only 'glb' is supported in this version."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        from .models import AnimationExport
+        from .tasks import bake_animation_export, make_export_cache_key
+        key = make_export_cache_key(rig, animation_ids, fmt)
+        cached = AnimationExport.objects.filter(
+            rig=rig, cache_key=key, status=AnimationExport.STATUS_DONE).first()
+        if cached:
+            return Response(self._export_data(cached, request), status=status.HTTP_200_OK)
+
+        exp = AnimationExport.objects.create(
+            rig=rig, animation_ids=[str(a) for a in animation_ids],
+            export_format=fmt, cache_key=key, status=AnimationExport.STATUS_PENDING)
+        bake_animation_export.delay(str(exp.id))
+        return Response(self._export_data(exp, request), status=status.HTTP_202_ACCEPTED)
+
+    @extend_schema(
+        summary="Poll an animation export job",
+        description="Public, unthrottled — the editor polls it.",
+        tags=["Rigging"],
+    )
+    @action(detail=True, methods=["get"],
+            url_path=r"exports/(?P<export_id>[0-9a-f-]+)",
+            permission_classes=[AllowAny], authentication_classes=[])
+    def export_status(self, request, id=None, export_id=None):
+        from .models import AnimationExport
+        try:
+            exp = AnimationExport.objects.get(id=export_id, rig_id=id)
+        except AnimationExport.DoesNotExist:
+            return Response({"error": "Export not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self._export_data(exp, request))
