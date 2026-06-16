@@ -189,6 +189,37 @@ def get_meshes():
             if o.type == "MESH" and not _is_rigify_widget_object(o)]
 
 
+def find_skinning_armature(meshes):
+    """Return the armature that skins the LARGEST mesh, or None.
+
+    'Skins' means the mesh has an ARMATURE modifier targeting the armature AND
+    at least one vertex group whose name matches a bone in that armature. The
+    armature must have >= 2 bones. Naming-agnostic. Picking the largest-mesh
+    deformer ignores prop-only armatures (e.g. a one-bone sword rig)."""
+    real = [m for m in meshes if not _is_rigify_widget_object(m)]
+    if not real:
+        return None
+    largest = max(real, key=lambda m: len(m.data.vertices))
+    vg_names = {vg.name for vg in largest.vertex_groups}
+    if not vg_names:
+        return None
+    best, best_matches = None, 0
+    for mod in largest.modifiers:
+        if mod.type != "ARMATURE" or not mod.object or mod.object.type != "ARMATURE":
+            continue
+        arm = mod.object
+        bone_names = {b.name for b in arm.data.bones}
+        if len(bone_names) < 2:
+            continue
+        matches = len(vg_names & bone_names)
+        if matches > best_matches:
+            best, best_matches = arm, matches
+    if best is not None:
+        log(f"Detected existing rig '{best.name}' skinning largest mesh "
+            f"'{largest.name}' ({best_matches} matching vertex groups)")
+    return best
+
+
 def remove_rigify_widget_objects():
     """Remove Rigify WGT-* helper meshes from the scene.
 
@@ -1674,6 +1705,23 @@ def canonical_mixamo_name(raw):
     if re.fullmatch(r"foot|ankle", core):                         return f"{side}Foot"
     if re.fullmatch(r"toe|toe_?base|ball", core):                 return f"{side}ToeBase"
     return None
+
+
+def build_bone_map_from_existing(armature):
+    """Best-effort {MixamoName: existingBoneName} from a kept skeleton.
+
+    First match per Mixamo name wins. Same shape as build_bone_map so the
+    animation retargeter and frontend consume it identically."""
+    mapping = {}
+    for b in armature.data.bones:
+        mx = canonical_mixamo_name(b.name)
+        if mx and mx not in mapping:
+            mapping[mx] = b.name
+    log(
+        f"Existing-rig bone map: {len(mapping)} of "
+        f"{len(armature.data.bones)} bones mapped to Mixamo names"
+    )
+    return mapping
 
 
 def build_bone_map(rig):
