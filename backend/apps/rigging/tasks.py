@@ -1,6 +1,7 @@
 import subprocess
 import time
 import json
+import hashlib
 import tempfile
 from pathlib import Path
 
@@ -432,3 +433,95 @@ def auto_rig_model_with_landmarks(rig_id: str, landmarks: dict) -> dict:
         rig_id,
         extra_args=["--landmarks", json.dumps(landmarks)],
     )
+
+
+# ---------------------------------------------------------------------------
+# Animation export (server-side bake)
+# ---------------------------------------------------------------------------
+
+def make_export_cache_key(rig, animation_ids, fmt):
+    """Stable key for (rig + ordered animations + format + rig version) so an
+    identical re-export returns the cached result instead of re-baking."""
+    rig_stamp = rig.updated_at.isoformat() if rig.updated_at else ""
+    raw = f"{rig.id}|{sorted(map(str, animation_ids))}|{fmt}|{rig_stamp}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+def _run_bake_pipeline(export_id: str) -> dict:
+    """Bake the selected animations onto the rig via blender_retarget.py and
+    save the animated GLB onto the AnimationExport row. Reuses the Blender
+    subprocess harness + WS progress used by the rig pipeline."""
+    from .models import AnimationExport
+    from apps.animations.models import Animation
+
+    exp = AnimationExport.objects.select_related("rig", "rig__user__user").get(id=export_id)
+    rig = exp.rig
+    user_id = str(rig.user.user.id) if (rig.user and rig.user.user) else ""
+
+    exp.status = AnimationExport.STATUS_PROCESSING
+    exp.save(update_fields=["status"])
+    push_ws(user_id, {"export_id": export_id, "step": "Baking animation...", "pct": 20})
+
+    try:
+        if not rig.rigged_glb:
+            raise RuntimeError("Rig has no rigged GLB to animate")
+        anims = list(Animation.objects.filter(id__in=exp.animation_ids))
+        order = {str(a): i for i, a in enumerate(exp.animation_ids)}
+        anims.sort(key=lambda a: order.get(str(a.id), 0))
+        if not anims:
+            raise RuntimeError("No valid animations selected")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            rig_path = tmp / "rig.glb"
+            with rig.rigged_glb.open("rb") as f:
+                rig_path.write_bytes(f.read())
+            bone_map_path = tmp / "bone_map.json"
+            bone_map_path.write_text(json.dumps(rig.bone_mapping or {}))
+
+            clips = []
+            for a in anims:
+                ext = a.gltf_file.name.split(".")[-1].lower()
+                cp = tmp / f"clip_{a.id}.{ext}"
+                with a.gltf_file.open("rb") as f:
+                    cp.write_bytes(f.read())
+                clips.append({"id": str(a.id), "name": a.name,
+                              "path": str(cp), "format": ext})
+            clips_path = tmp / "clips.json"
+            clips_path.write_text(json.dumps(clips))
+
+            out_path = tmp / "animated.glb"
+            report_path = tmp / "report.json"
+            script = settings.BLENDER_SCRIPTS_DIR / "blender_retarget.py"
+            cmd = [
+                settings.BLENDER_EXECUTABLE, "--background", "--python", str(script), "--",
+                "--rig", str(rig_path), "--clips", str(clips_path),
+                "--output", str(out_path), "--bone-map", str(bone_map_path),
+                "--report-out", str(report_path),
+            ]
+            rc, out, err = _blender_call(
+                cmd, timeout=600, cwd=str(settings.BLENDER_SCRIPTS_DIR.parent))
+            if rc != 0 or not out_path.exists():
+                raise RuntimeError(f"Bake failed (rc={rc}). {(err or out)[-500:]}")
+
+            with open(out_path, "rb") as f:
+                exp.output_file.save(f"{exp.id}.glb", File(f), save=False)
+            if report_path.exists():
+                exp.report = json.loads(report_path.read_text())
+
+        exp.status = AnimationExport.STATUS_DONE
+        exp.save()
+        push_ws(user_id, {"export_id": export_id, "step": "Done", "pct": 100})
+        return {"status": "done", "export_id": export_id}
+    except Exception as e:
+        logger.exception("Bake failed for export %s: %s", export_id, e)
+        exp.status = AnimationExport.STATUS_FAILED
+        exp.error_message = str(e)[:2000]
+        exp.save()
+        push_ws(user_id, {"export_id": export_id, "status": "failed", "error": str(e)})
+        return {"status": "failed", "export_id": export_id}
+
+
+@shared_task(name="rigging.bake_animation_export")
+def bake_animation_export(export_id: str) -> dict:
+    return _run_bake_pipeline(export_id)
