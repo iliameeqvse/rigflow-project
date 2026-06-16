@@ -153,42 +153,53 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
                             )
                         elif request_path.exists():
                             request_data = json.loads(request_path.read_text())
-                            vision_req = VisionRequest(
-                                rig_id=str(rig.id),
-                                views=request_data["views"],
-                                mesh_objects=request_data["mesh_objects"],
-                                world_aabb=tuple(
-                                    tuple(c) for c in request_data["world_aabb"]
-                                ),
-                            )
-                            push_ws(user_id, {"rig_id": rig_id,
-                                              "step": "Calling vision model…", "pct": 35})
-                            vision_resp = provider.detect(vision_req)
-                            if vision_resp is not None:
+                            if request_data.get("already_rigged"):
+                                # The upload already has a skeleton skinning the
+                                # mesh — the keep-rig branch will preserve it, so
+                                # skip the vision call entirely (no landmarks).
                                 ai_phase_log.append(
-                                    "[RigFlow] Vision model returned landmarks"
+                                    "[RigFlow] Upload already rigged — skipping "
+                                    "vision; preserving existing skeleton."
                                 )
-                                ai_response_path = tmp / "ai_response.json"
-                                ai_response_path.write_text(json.dumps({
-                                    "landmarks":    vision_resp.landmarks,
-                                    "mesh_objects": vision_resp.mesh_object_labels,
-                                    "notes":        vision_resp.notes,
-                                    # Forward phase-1 per-view camera params so
-                                    # the full-rig pass can raycast each view
-                                    # with its own ortho_scale.
-                                    "views":        request_data.get("views", {}),
-                                }, indent=2))
-                                rig.vision_response_raw = vision_resp.raw
-                                rig.detection_method = "llm_vision"
+                                rig.used_existing_rig = True
+                                rig.detection_method = "preserved"
                             else:
-                                ai_phase_log.append(
-                                    "[RigFlow] Vision model returned no landmarks; using geometry"
+                                vision_req = VisionRequest(
+                                    rig_id=str(rig.id),
+                                    views=request_data["views"],
+                                    mesh_objects=request_data["mesh_objects"],
+                                    world_aabb=tuple(
+                                        tuple(c) for c in request_data["world_aabb"]
+                                    ),
                                 )
-                                logger.warning(
-                                    "Vision provider %s returned no landmarks for rig %s; using geometry",
-                                    type(provider).__name__, rig_id,
-                                )
-                                rig.detection_method = "geometry"
+                                push_ws(user_id, {"rig_id": rig_id,
+                                                  "step": "Calling vision model…", "pct": 35})
+                                vision_resp = provider.detect(vision_req)
+                                if vision_resp is not None:
+                                    ai_phase_log.append(
+                                        "[RigFlow] Vision model returned landmarks"
+                                    )
+                                    ai_response_path = tmp / "ai_response.json"
+                                    ai_response_path.write_text(json.dumps({
+                                        "landmarks":    vision_resp.landmarks,
+                                        "mesh_objects": vision_resp.mesh_object_labels,
+                                        "notes":        vision_resp.notes,
+                                        # Forward phase-1 per-view camera params so
+                                        # the full-rig pass can raycast each view
+                                        # with its own ortho_scale.
+                                        "views":        request_data.get("views", {}),
+                                    }, indent=2))
+                                    rig.vision_response_raw = vision_resp.raw
+                                    rig.detection_method = "llm_vision"
+                                else:
+                                    ai_phase_log.append(
+                                        "[RigFlow] Vision model returned no landmarks; using geometry"
+                                    )
+                                    logger.warning(
+                                        "Vision provider %s returned no landmarks for rig %s; using geometry",
+                                        type(provider).__name__, rig_id,
+                                    )
+                                    rig.detection_method = "geometry"
                         else:
                             ai_phase_log.append(
                                 "[RigFlow] Ortho render produced no AI request; using geometry"
@@ -272,7 +283,9 @@ def _run_rig_pipeline(rig_id: str, extra_args: list = None) -> dict:
             # produces a done rig, never a hard failure).
             _LOOSE_AABB = ((-2.0, -0.5, -2.0), (2.0, 2.5, 2.0))
 
-            if landmarks_path.exists():
+            # Preserved rigs have no Rigify landmarks to validate — skip the
+            # whole cascade so detection_method stays "preserved".
+            if not rig.used_existing_rig and landmarks_path.exists():
                 from .sanity import check_landmarks
                 _candidate = json.loads(landmarks_path.read_text())
                 _sr = check_landmarks(_candidate, world_aabb=_LOOSE_AABB)
