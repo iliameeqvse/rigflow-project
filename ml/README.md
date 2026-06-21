@@ -1,22 +1,51 @@
-# RigFlow ML — custom keypoint network
+# RigFlow ML — neural network for skeleton landmark detection
 
-Goal: train our own network that looks at front + side renders of a model and
-predicts where the 14 skeleton joints are, to replace/beat the Haiku vision
-call in the auto-rig pipeline.
+A custom-trained neural network that looks at a plain render of a 3D character
+and predicts where its **14 body joints** are (shoulders, elbows, wrists, hips,
+knees, ankles, chin, groin). Those joint positions drive RigFlow's auto-rigger,
+which places a skeleton so animations bind cleanly — no manual rigging.
+
+It's a **2D keypoint / pose-estimation** model: a pretrained ResNet-18
+fine-tuned (transfer learning) on automatically-labelled data, with left/right
+flip and colour augmentation to stretch a small dataset.
+
+## Result
+
+The network predicting joints on a character it has **never seen during
+training** (trained on ~10 models):
+
+![prediction on an unseen character](docs/prediction_unseen.png)
+
+Most joints land on the correct body part straight away — and accuracy keeps
+improving as the dataset grows.
+
+## How it learns from correct data (no manual labelling)
+
+A model that is *already correctly rigged* is a free, perfectly-labelled
+example: render it, and the known bone positions tell you exactly where every
+joint is in the image. The data-gen step renders the model and projects its real
+skeleton to pixels — that's the answer key. The overlay below is a check image
+(dots = the true joint labels read straight from the rig):
+
+![auto-generated training label](docs/auto_label.png)
+
+This means thousands of perfect training examples can be generated automatically
+from free rigged models (e.g. Mixamo), instead of hand-labelling by hand.
 
 ## Layout
 
 ```
 ml/
 ├── data_gen/     # turn rigged models into training examples (images + labels)
-├── train/        # PyTorch training code            (next step)
-├── inference/    # load a trained model + predict    (later — feeds local_provider.py)
-├── weights/      # trained .pth files     (gitignored — big, regenerable)
+├── train/        # PyTorch training code (dataset, model, training loop)
+├── inference/    # load a trained model + predict (feeds the backend rigger)
+├── docs/         # showcase images for this README
+├── weights/      # trained .pth files        (gitignored — big, regenerable)
 ├── datasets/     # generated images + labels (gitignored — big, regenerable)
 └── requirements.txt
 ```
 
-## Step 1 — make training data (you are here)
+## Step 1 — make training data
 
 A correctly-rigged model is a free, perfectly-labelled example: render it, and
 the known bone positions tell you exactly where each joint is in the image.
@@ -63,7 +92,7 @@ hundreds of examples; keep adding Mixamo humanoids and re-running data_gen.
 ## Step 3 — see what it learned
 
 ```bash
-python inference/predict.py --image "datasets/Remy_(1)/front.png"
+python inference/predict.py --image "datasets/model_01/front.png"
 ```
 
 Writes `front_pred.png` with the network's guessed joints (blue dots). Try a
