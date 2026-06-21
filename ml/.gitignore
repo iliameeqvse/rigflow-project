@@ -1,0 +1,6 @@
+# Generated training data and trained models — big and regenerable, never commit.
+datasets/
+weights/
+.venv/
+__pycache__/
+*.pyc

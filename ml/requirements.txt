@@ -1,0 +1,10 @@
+# ML deps — keep separate from backend/requirements.txt (torch is ~2GB).
+# Install into a dedicated venv:  python -m venv ml/.venv && ml/.venv/Scripts/pip install -r ml/requirements.txt
+#
+# NOTE: render_keypoints.py runs inside Blender and uses ONLY Blender's bundled
+# Python (bpy/mathutils) — it needs nothing from this file. These are for the
+# overlay checker and the training/inference code.
+pillow
+numpy
+torch
+torchvision
