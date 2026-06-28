@@ -16,6 +16,25 @@ Historical: a PEM-formatted SSH private key was committed at the repo root as `r
 
 Historical: the entire module was appended to itself, so every throttle class was defined twice. The file has been deduplicated — there is now exactly one definition of each class.
 
+## Postgres password drift — stale `pgdata` volume vs `docker/.env`
+
+The single most confusing failure mode: you click **Upload & auto-rig**, the browser shows a generic **"Network Error"**, and it looks like a frontend/axios bug. It isn't. The request URL and protocol are fine (`http://localhost:8000/api/v1/rigs/`); the request just has nothing to talk to because the backend container is down.
+
+Root cause chain:
+
+1. `docker/docker-compose.yml` initializes Postgres with `POSTGRES_PASSWORD=${DB_PASSWORD:-rigflow123}`, but Postgres only applies that **on first init of an empty `pgdata` volume**.
+2. If `DB_PASSWORD` in `docker/.env` is later changed, the existing DB user keeps its *original* password while `web`/`celery`/`beat` now connect with the *new* one.
+3. `web` and `beat` crash-loop on `OperationalError: ... FATAL: password authentication failed for user "rigflow"`, so nothing listens on `:8000`.
+4. axios reports the failed connection as a generic "Network Error" — masking a pure backend/DB-auth problem as a frontend one.
+
+Debugging trap: running `psql` *inside* the `db` container connects over the local unix socket, which `pg_hba.conf` lists as `trust` (no password). So a local `psql` succeeding with **any** password proves nothing. The app connects over **TCP to host `db`**, matched by the `host all all all scram-sha-256` rule, which actually enforces the password. Reproduce the real path with:
+
+```bash
+docker exec -e PGPASSWORD=<pw> docker-db-1 psql -h db -U rigflow -d rigflow -c "select 1"
+```
+
+Fix and prevention are in [SETUP § Common Errors → password authentication failed](SETUP.md#password-authentication-failed-for-user-rigflow--web-and-beat-keep-restarting). Short version: `ALTER USER rigflow WITH PASSWORD '<docker/.env value>'` then restart the app containers (keeps data), or `down -v` to reinit (drops data). **Choose `DB_PASSWORD` once, before the first `up`.**
+
 ## Blender failures mark the row `failed` (no more silent passthrough)
 
 Earlier behaviour: if `BLENDER_EXECUTABLE` wasn't a real binary, or if Blender errored, `tasks._run_rig_pipeline` silently copied the input as the "rigged" output and marked the row `done`. That hid real failures behind a green checkmark.

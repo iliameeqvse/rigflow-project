@@ -58,6 +58,8 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 ```
 
 > `SECRET_KEY` must be identical in both files. `DB_PASSWORD` can be anything you choose — it's only used internally between containers.
+>
+> ⚠️ **Pick `DB_PASSWORD` before the first `up` and don't change it afterwards.** PostgreSQL only applies `POSTGRES_PASSWORD` when it *initializes an empty* `pgdata` volume. Editing `DB_PASSWORD` in `docker/.env` after the database has already been created does **not** change the existing user's password — `web`/`celery`/`beat` will then fail to connect and crash-loop. See [Common Errors → password authentication failed](#password-authentication-failed-for-user-rigflow--web-and-beat-keep-restarting) if you hit this.
 
 **`frontend/.env.local`** (only needed for `npm run dev` outside Docker):
 
@@ -176,6 +178,15 @@ DJANGO_SETTINGS_MODULE=rigflow.settings.local python manage.py runserver
 
 > **Blender is required for rigging** even in local mode. Install Blender 5.0 and set `BLENDER_PATH` in `backend/.env`, or set `LANDMARK_VISION_PROVIDER=none` and leave the system Blender on your PATH.
 
+#### Do Docker developers need to install Blender or set `BLENDER_PATH`?
+
+**No.** When you run the stack with Docker Compose (the default workflow), Blender is fully self-contained:
+
+- `backend/Dockerfile.celery` downloads **Blender 5.0.1** (official Linux tarball), symlinks it to `/usr/local/bin/blender`, and bakes in `ENV BLENDER_PATH=/usr/local/bin/blender`.
+- `docker/docker-compose.yml` *additionally* pins `BLENDER_PATH=/usr/local/bin/blender` under the `celery` service's `environment:`. This is deliberate: `environment:` overrides `env_file:`, so a native **Windows** `BLENDER_PATH` left in `backend/.env` for non-Docker work cannot leak into the Linux container and break the worker.
+
+So you can safely keep a Windows `BLENDER_PATH` in `backend/.env` for occasional native runs while still using Docker normally. Only a developer running the **backend/Celery natively** (no Docker) needs Blender installed on their host — either on `PATH` or via `BLENDER_PATH`. Rigging only runs in the `celery` worker, so the `web` container itself never needs Blender.
+
 ---
 
 ## Running Tests
@@ -240,6 +251,35 @@ Same PATH issue as above. Open a fresh terminal.
 ```bash
 docker compose -f docker/docker-compose.yml up -d --build frontend
 ```
+
+### `password authentication failed for user "rigflow"` / `web` and `beat` keep restarting
+
+Symptom: the frontend shows a **"Network Error"** the moment you click **Upload & auto-rig** (or any API call fails), and `docker ps` shows `web`/`beat` stuck in `Restarting`. Their logs end with:
+
+```
+django.db.utils.OperationalError: connection to server at "db" ... FATAL:  password authentication failed for user "rigflow"
+```
+
+Cause: the `pgdata` volume was initialized with a **different** `DB_PASSWORD` than the one currently in `docker/.env`. Postgres only honours `POSTGRES_PASSWORD` on first init of an empty volume, so changing `DB_PASSWORD` afterwards leaves the database user on the *old* password while the app tries the *new* one.
+
+Fix (non-destructive — keeps your data). Set the DB user's password to match `docker/.env`, then restart the apps:
+
+```bash
+# replace <DB_PASSWORD> with the value in docker/.env
+docker exec -it docker-db-1 psql -U rigflow -d rigflow \
+  -c "ALTER USER rigflow WITH PASSWORD '<DB_PASSWORD>';"
+
+docker compose -f docker/docker-compose.yml restart web celery beat
+```
+
+Or, if you don't care about the existing DB contents, wipe and re-init the volume (**deletes all data**):
+
+```bash
+docker compose -f docker/docker-compose.yml down -v
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+> Note: `psql` *inside* the `db` container connects over the local socket, which `pg_hba.conf` trusts without a password — so a local `psql` "working" does **not** prove the password is correct. The app connects over TCP to host `db`, which enforces `scram-sha-256`. Test that path with `docker exec -e PGPASSWORD=<pw> docker-db-1 psql -h db -U rigflow -d rigflow -c "select 1"`.
 
 ### Rig status stays `pending` forever
 
